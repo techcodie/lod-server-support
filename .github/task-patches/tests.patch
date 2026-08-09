@@ -1,0 +1,648 @@
+diff --git a/fabric/build.gradle b/fabric/build.gradle
+index 0559c6b..8290b59 100644
+--- a/fabric/build.gradle
++++ b/fabric/build.gradle
+@@ -43,6 +43,8 @@ dependencies {
+     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+     testImplementation "net.fabricmc:fabric-loader-junit:${project.loader_version}"
++    testImplementation "org.mockito:mockito-core:5.20.0"
++    testRuntimeOnly "org.junit.platform:junit-platform-launcher:1.11.4"
+     // LOD-store Phase 0 experiment deps (docs/planning/lod-store-implementation-plan.md):
+     // the codec/schema decision tool (LodStoreExperimentTool, gated on
+     // -Plss.store.experiment.regionDir) measures decompress throughput + SQLite page-shape
+diff --git a/fabric/src/test/java/com/viaversion/viaversion/api/Via.java b/fabric/src/test/java/com/viaversion/viaversion/api/Via.java
+new file mode 100644
+index 0000000..bf409d9
+--- /dev/null
++++ b/fabric/src/test/java/com/viaversion/viaversion/api/Via.java
+@@ -0,0 +1,22 @@
++package com.viaversion.viaversion.api;
++
++import java.util.UUID;
++
++/**
++ * Real-package-name stub of ViaVersion's static entry class — see {@link ViaAPI}.
++ * Tests drive {@link #API} / {@link #throwOnGetApi}; glue tests reset both in {@code @BeforeEach}.
++ */
++public final class Via {
++    private Via() {}
++
++    public static volatile ViaAPI<UUID> API;
++    public static volatile RuntimeException throwOnGetApi;
++
++    /** Raw return type, like upstream ({@code public static ViaAPI getAPI()}). */
++    @SuppressWarnings("rawtypes")
++    public static ViaAPI getAPI() {
++        var t = throwOnGetApi;
++        if (t != null) throw t;
++        return API;
++    }
++}
+diff --git a/fabric/src/test/java/com/viaversion/viaversion/api/ViaAPI.java b/fabric/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
+new file mode 100644
+index 0000000..67c4fe6
+--- /dev/null
++++ b/fabric/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
+@@ -0,0 +1,16 @@
++package com.viaversion.viaversion.api;
++
++import java.util.UUID;
++
++/**
++ * Real-package-name stub of ViaVersion's API surface for unit tests.
++ */
++public interface ViaAPI<T> {
++
++    int getPlayerVersion(T player);
++
++    @SuppressWarnings("unchecked")
++    default int getPlayerVersion(UUID uuid) {
++        return getPlayerVersion((T) uuid);
++    }
++}
+diff --git a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java b/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
+index 1d1f700..f84d122 100644
+--- a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
++++ b/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
+@@ -39,6 +39,14 @@ class ConfigValidationTest {
+         assertTrue(serverConfig().enableV19Compat);
+     }
+ 
++    /** The Via cross-MC guard ships ON (XVER §7): without it a legacy client behind
++     *  Via silently receives columns it cannot decode. Fail-open by construction (no
++     *  Via / no signal = unchanged), so the on-default is safe without Via installed. */
++    @Test
++    void viaMismatchGuardDefaultsOn() {
++        assertTrue(serverConfig().enableViaMismatchGuard);
++    }
++
+     @Test
+     void lodDistanceChunksClamped() {
+         var c = serverConfig();
+diff --git a/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java b/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java
+new file mode 100644
+index 0000000..8fce501
+--- /dev/null
++++ b/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java
+@@ -0,0 +1,214 @@
++package dev.vox.lss.networking.server;
++
++import com.viaversion.viaversion.api.Via;
++import dev.vox.lss.common.LSSConstants;
++import dev.vox.lss.common.compat.V16CompatManager;
++import dev.vox.lss.common.compat.WireDialectTracker;
++import dev.vox.lss.config.LSSServerConfig;
++import dev.vox.lss.networking.payloads.HandshakeC2SPayload;
++import dev.vox.lss.networking.payloads.SessionConfigS2CPayload;
++import net.minecraft.SharedConstants;
++import net.minecraft.network.chat.Component;
++import net.minecraft.server.Bootstrap;
++import net.minecraft.server.level.ServerPlayer;
++import org.apache.logging.log4j.Level;
++import org.apache.logging.log4j.LogManager;
++import org.apache.logging.log4j.core.LogEvent;
++import org.apache.logging.log4j.core.LoggerContext;
++import org.apache.logging.log4j.core.appender.AbstractAppender;
++import org.apache.logging.log4j.core.config.Property;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeAll;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.UUID;
++import java.util.concurrent.CopyOnWriteArrayList;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.atLeastOnce;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++/**
++ * Production Fabric wiring: the normal join-time {@link LSSServerNetworking#handleHandshake}
++ * entry must consult ViaVersion when the toggle is on — not test-only overloads that inject
++ * protocol integers directly.
++ */
++class LSSServerNetworkingHandshakeGlueTest {
++
++    private static final UUID PLAYER = UUID.randomUUID();
++    private static final int V = LSSConstants.PROTOCOL_VERSION;
++    private static final int VOXEL_CAPS = LSSConstants.CAPABILITY_VOXEL_COLUMNS;
++    private static final int VIA_PROTOCOL = 763;
++
++    private boolean priorToggle;
++
++    @BeforeAll
++    static void setup() {
++        SharedConstants.tryDetectVersion();
++        Bootstrap.bootStrap();
++    }
++
++    @BeforeEach
++    void resetViaStub() {
++        Via.API = null;
++        Via.throwOnGetApi = null;
++        priorToggle = LSSServerConfig.CONFIG.enableViaMismatchGuard;
++        LSSServerConfig.CONFIG.enableViaMismatchGuard = true;
++    }
++
++    @AfterEach
++    void restoreToggle() {
++        LSSServerConfig.CONFIG.enableViaMismatchGuard = priorToggle;
++    }
++
++    @Test
++    void throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++        Via.throwOnGetApi = new IllegalArgumentException("Via not initialized");
++        var service = mockRequestService();
++        assertFalse(repliesAfterLegacyHandshake(19, service).isEmpty(),
++                "a throwing Via entry must fail open for that handshake");
++        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
++    }
++
++    @Test
++    void noViaSignalLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++        Via.API = null;
++        var service = mockRequestService();
++        assertFalse(repliesAfterLegacyHandshake(19, service).isEmpty(),
++                "no Via signal must fail open and keep the legacy ladder");
++        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
++    }
++
++    @Test
++    void viaMismatchDeniesEveryLegacyDialectSilentlyThroughProductionEntry() {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        for (int version : new int[]{19, 18, 16}) {
++            var service = mockRequestService();
++            assertTrue(repliesAfterLegacyHandshake(version, service).isEmpty(),
++                    "legacy protocol " + version + " must send no session-config reply on Via mismatch");
++            verify(service, never()).registerPlayer(any(), anyInt());
++        }
++    }
++
++    @Test
++    void viaMismatchNeverTouchesACurrentClientThroughProductionEntry() {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        var service = mockRequestService();
++        var player = mockPlayer();
++        var replies = new ArrayList<SessionConfigS2CPayload>();
++        LSSServerNetworking.handleHandshake(
++                new HandshakeC2SPayload(V, VOXEL_CAPS),
++                player, service, replies::add);
++        assertFalse(replies.isEmpty(), "current-protocol clients must not be blocked by Via mismatch");
++        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
++    }
++
++    @Test
++    void versionMismatchOutranksViaGuardThroughProductionEntry() {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        assertTrue(repliesAfterLegacyHandshake(17, mockRequestService()).isEmpty(),
++                "foreign protocol must stay on the version-mismatch silent deny");
++        boolean priorV19 = LSSServerConfig.CONFIG.enableV19Compat;
++        LSSServerConfig.CONFIG.enableV19Compat = false;
++        try (var capture = new LssLogCapture()) {
++            repliesAfterLegacyHandshake(19, mockRequestService());
++            assertTrue(capture.rows().stream().noneMatch(row ->
++                            row.message().contains(String.valueOf(VIA_PROTOCOL))),
++                    "v19 with the rung disabled is a version mismatch, not a Via denial");
++        } finally {
++            LSSServerConfig.CONFIG.enableV19Compat = priorV19;
++        }
++    }
++
++    @Test
++    void toggleOffIgnoresViaMismatchThroughProductionEntry() {
++        LSSServerConfig.CONFIG.enableViaMismatchGuard = false;
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        var service = mockRequestService();
++        assertFalse(repliesAfterLegacyHandshake(19, service).isEmpty(),
++                "with enableViaMismatchGuard=false, a Via mismatch must not change outcomes");
++        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
++    }
++
++    @Test
++    void viaMismatchLogsBothMinecraftProtocolNumbers() {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        int nativeProtocol = SharedConstants.getProtocolVersion();
++        var player = mockPlayer();
++        try (var capture = new LssLogCapture()) {
++            LSSServerNetworking.handleHandshake(
++                    new HandshakeC2SPayload(19, VOXEL_CAPS),
++                    player, null, ignored -> {});
++            assertTrue(capture.rows().stream().anyMatch(row ->
++                            row.message().contains(String.valueOf(VIA_PROTOCOL))
++                                    && row.message().contains(String.valueOf(nativeProtocol))),
++                    "operators must see both Via-reported and server Minecraft protocol numbers");
++        }
++    }
++
++    private List<SessionConfigS2CPayload> repliesAfterLegacyHandshake(int protocolVersion,
++                                                                      RequestProcessingService service) {
++        var player = mockPlayer();
++        var replies = new ArrayList<SessionConfigS2CPayload>();
++        LSSServerNetworking.handleHandshake(
++                new HandshakeC2SPayload(protocolVersion, VOXEL_CAPS),
++                player, service, replies::add);
++        return replies;
++    }
++
++    private static RequestProcessingService mockRequestService() {
++        var service = mock(RequestProcessingService.class);
++        when(service.getV16CompatManager()).thenReturn(new V16CompatManager());
++        when(service.getDialectTracker()).thenReturn(new WireDialectTracker());
++        return service;
++    }
++
++    private static ServerPlayer mockPlayer() {
++        var player = mock(ServerPlayer.class);
++        when(player.getUUID()).thenReturn(PLAYER);
++        when(player.getName()).thenReturn(Component.literal("vx9m"));
++        return player;
++    }
++
++    private record LogRow(Level level, String message) {}
++
++    private static final class LssLogCapture extends AbstractAppender implements AutoCloseable {
++        private final List<LogRow> rows = new CopyOnWriteArrayList<>();
++        private final LoggerContext ctx;
++
++        LssLogCapture() {
++            super("lss-fabric-glue-test-capture", null, null, true, Property.EMPTY_ARRAY);
++            start();
++            ctx = (LoggerContext) LogManager.getContext(false);
++            ctx.getConfiguration().getRootLogger().addAppender(this, Level.ALL, null);
++            ctx.updateLoggers();
++        }
++
++        @Override
++        public void append(LogEvent event) {
++            if ("LSS".equals(event.getLoggerName())) {
++                rows.add(new LogRow(event.getLevel(), event.getMessage().getFormattedMessage()));
++            }
++        }
++
++        List<LogRow> rows() {
++            return rows;
++        }
++
++        @Override
++        public void close() {
++            ctx.getConfiguration().getRootLogger().removeAppender(getName());
++            ctx.updateLoggers();
++            stop();
++        }
++    }
++}
+diff --git a/paper/src/test/java/com/viaversion/viaversion/api/Via.java b/paper/src/test/java/com/viaversion/viaversion/api/Via.java
+new file mode 100644
+index 0000000..813b396
+--- /dev/null
++++ b/paper/src/test/java/com/viaversion/viaversion/api/Via.java
+@@ -0,0 +1,23 @@
++package com.viaversion.viaversion.api;
++
++import java.util.UUID;
++
++/**
++ * Real-package-name stub of ViaVersion's static entry class — see {@link ViaAPI}.
++ * Tests drive {@link #API} / {@link #throwOnGetApi}; production tests reset both in
++ * {@code @BeforeEach}.
++ */
++public final class Via {
++    private Via() {}
++
++    public static volatile ViaAPI<UUID> API;
++    public static volatile RuntimeException throwOnGetApi;
++
++    /** Raw return type, like upstream ({@code public static ViaAPI getAPI()}). */
++    @SuppressWarnings("rawtypes")
++    public static ViaAPI getAPI() {
++        var t = throwOnGetApi;
++        if (t != null) throw t;
++        return API;
++    }
++}
+diff --git a/paper/src/test/java/com/viaversion/viaversion/api/ViaAPI.java b/paper/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
+new file mode 100644
+index 0000000..0edd2b4
+--- /dev/null
++++ b/paper/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
+@@ -0,0 +1,14 @@
++package com.viaversion.viaversion.api;
++
++import java.util.UUID;
++
++/** Real-package-name stub of ViaVersion's API surface for unit tests. */
++public interface ViaAPI<T> {
++
++    int getPlayerVersion(T player);
++
++    @SuppressWarnings("unchecked")
++    default int getPlayerVersion(UUID uuid) {
++        return getPlayerVersion((T) uuid);
++    }
++}
+diff --git a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
+index cc83e20..fdee1ae 100644
+--- a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
++++ b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
+@@ -294,6 +294,20 @@ class LSSPaperPluginGlueTest {
+         assertEquals(List.of(HandshakeGate.WireDialect.V19), registrar.dialects);
+     }
+ 
++    @Test
++    void noViaSignalLeavesLegacyHandshakeUnchangedThroughStaticGlue() {
++        // Production reads Via then delegates to the no-signal overload when probe returns
++        // nothing; this pins the unchanged ladder on that path.
++        var config = config(true);
++        var sender = new RecordingSender();
++        var registrar = new RecordingRegistrar();
++        LSSPaperPlugin.handleHandshake(handshakeFrame(19, VOXEL_CAPS),
++                "vx9m", config, true, sender, registrar);
++        registrar.runDeferredReplies();
++        assertEquals(List.of(VOXEL_CAPS), registrar.caps,
++                "no Via signal must leave the ladder untouched (fail-open)");
++    }
++
+     @Test
+     void v19HandshakeWithCompatDisabledSendsNothing() {
+         var config = config(true);
+diff --git a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java
+new file mode 100644
+index 0000000..157321d
+--- /dev/null
++++ b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java
+@@ -0,0 +1,230 @@
++package dev.vox.lss.paper;
++
++import com.viaversion.viaversion.api.Via;
++import dev.vox.lss.common.LSSConstants;
++import dev.vox.lss.common.compat.V16CompatManager;
++import dev.vox.lss.common.compat.WireDialectTracker;
++import io.netty.buffer.Unpooled;
++import net.minecraft.SharedConstants;
++import net.minecraft.network.FriendlyByteBuf;
++import net.minecraft.network.chat.Component;
++import net.minecraft.server.Bootstrap;
++import net.minecraft.server.level.ServerPlayer;
++import org.apache.logging.log4j.Level;
++import org.apache.logging.log4j.LogManager;
++import org.apache.logging.log4j.core.LogEvent;
++import org.apache.logging.log4j.core.LoggerContext;
++import org.apache.logging.log4j.core.appender.AbstractAppender;
++import org.apache.logging.log4j.core.config.Property;
++import org.bukkit.entity.Player;
++import org.junit.jupiter.api.BeforeAll;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.mockito.MockedStatic;
++
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.util.List;
++import java.util.UUID;
++import java.util.concurrent.CopyOnWriteArrayList;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyBoolean;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.atLeastOnce;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.mockStatic;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++/**
++ * Production Paper wiring: the private join-time handshake handler must consult ViaVersion
++ * when the toggle is on — not test-only static overloads that inject protocol integers.
++ */
++class LSSPaperPluginViaProductionTest {
++
++    private static final UUID PLAYER = UUID.randomUUID();
++    private static final int V = LSSConstants.PROTOCOL_VERSION;
++    private static final int VOXEL_CAPS = LSSConstants.CAPABILITY_VOXEL_COLUMNS;
++    private static final int VIA_PROTOCOL = 763;
++
++    @BeforeAll
++    static void setup() {
++        SharedConstants.tryDetectVersion();
++        Bootstrap.bootStrap();
++    }
++
++    @BeforeEach
++    void resetViaStub() {
++        Via.API = null;
++        Via.throwOnGetApi = null;
++    }
++
++    @Test
++    void pluginConstructsWithoutViaVersionInstalled() {
++        assertDoesNotThrow(LSSPaperPlugin::new,
++                "Paper must start without ViaVersion on the classpath");
++    }
++
++    @Test
++    void viaMismatchOnALegacyHandshakeIsDeniedSilentlyThroughProductionEntry() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        try (MockedStatic<PaperPayloadHandler> payloads = mockStatic(PaperPayloadHandler.class)) {
++            for (int version : new int[]{19, 18, 16}) {
++                var service = mockRequestService();
++                invokePrivateHandshake(pluginWith(config(true), service),
++                        mock(Player.class), mockNmsPlayer(), handshakeFrame(version, VOXEL_CAPS));
++                verify(service, never()).enqueueRegister(any(), anyInt(), any(), any());
++            }
++            payloads.verify(
++                    () -> PaperPayloadHandler.sendSessionConfig(
++                            any(), anyInt(), anyBoolean(), anyInt(), anyBoolean()),
++                    never());
++            payloads.verify(
++                    () -> PaperPayloadHandler.sendSessionConfigV16(
++                            any(), anyBoolean(), anyInt(), anyInt(), anyInt(), anyBoolean()),
++                    never());
++        }
++    }
++
++    @Test
++    void viaMismatchNeverTouchesACurrentClientThroughProductionEntry() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        var service = mockRequestService();
++        invokePrivateHandshake(pluginWith(config(true), service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(V, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    @Test
++    void throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() throws Exception {
++        Via.throwOnGetApi = new IllegalArgumentException("Via not initialized");
++        var service = mockRequestService();
++        invokePrivateHandshake(pluginWith(config(true), service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    @Test
++    void noViaSignalLeavesLegacyHandshakeUnchangedThroughProductionEntry() throws Exception {
++        Via.API = null;
++        var service = mockRequestService();
++        invokePrivateHandshake(pluginWith(config(true), service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    @Test
++    void viaMismatchLogsBothMinecraftProtocolNumbers() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        int nativeProtocol = SharedConstants.getProtocolVersion();
++        var plugin = pluginWith(config(true), null);
++        try (var capture = new LssLogCapture()) {
++            invokePrivateHandshake(plugin, mock(Player.class), mockNmsPlayer(),
++                    handshakeFrame(19, VOXEL_CAPS));
++            assertTrue(capture.rows().stream().anyMatch(row ->
++                            row.message().contains(String.valueOf(VIA_PROTOCOL))
++                                    && row.message().contains(String.valueOf(nativeProtocol))),
++                    "operators must see both Via-reported and server Minecraft protocol numbers");
++        }
++    }
++
++    @Test
++    void toggleOffIgnoresViaMismatchThroughProductionEntry() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        var config = config(true);
++        config.enableViaMismatchGuard = false;
++        var service = mockRequestService();
++        invokePrivateHandshake(pluginWith(config, service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    private static PaperConfig config(boolean enabled) {
++        var config = new PaperConfig();
++        config.enabled = enabled;
++        return config;
++    }
++
++    private static LSSPaperPlugin pluginWith(PaperConfig config, PaperRequestProcessingService service)
++            throws Exception {
++        var plugin = new LSSPaperPlugin();
++        setField(plugin, "lssConfig", config);
++        setField(plugin, "requestService", service);
++        return plugin;
++    }
++
++    private static PaperRequestProcessingService mockRequestService() {
++        var service = mock(PaperRequestProcessingService.class);
++        when(service.getV16CompatManager()).thenReturn(new V16CompatManager());
++        when(service.getDialectTracker()).thenReturn(new WireDialectTracker());
++        return service;
++    }
++
++    private static ServerPlayer mockNmsPlayer() {
++        var nms = mock(ServerPlayer.class);
++        when(nms.getUUID()).thenReturn(PLAYER);
++        when(nms.getName()).thenReturn(Component.literal("vx9m"));
++        return nms;
++    }
++
++    private static void invokePrivateHandshake(LSSPaperPlugin plugin, Player bukkit,
++                                               ServerPlayer nms, byte[] data) throws Exception {
++        Method m = LSSPaperPlugin.class.getDeclaredMethod(
++                "handleHandshake", Player.class, ServerPlayer.class, byte[].class);
++        m.setAccessible(true);
++        m.invoke(plugin, bukkit, nms, data);
++    }
++
++    private static void setField(Object target, String name, Object value) throws Exception {
++        Field f = target.getClass().getDeclaredField(name);
++        f.setAccessible(true);
++        f.set(target, value);
++    }
++
++    private static byte[] handshakeFrame(int version, int caps) {
++        var b = new FriendlyByteBuf(Unpooled.buffer());
++        b.writeVarInt(version);
++        b.writeVarInt(caps);
++        byte[] out = new byte[b.readableBytes()];
++        b.readBytes(out);
++        b.release();
++        return out;
++    }
++
++    private record LogRow(Level level, String message) {}
++
++    private static final class LssLogCapture extends AbstractAppender implements AutoCloseable {
++        private final List<LogRow> rows = new CopyOnWriteArrayList<>();
++        private final LoggerContext ctx;
++
++        LssLogCapture() {
++            super("lss-paper-via-production-capture", null, null, true, Property.EMPTY_ARRAY);
++            start();
++            ctx = (LoggerContext) LogManager.getContext(false);
++            ctx.getConfiguration().getRootLogger().addAppender(this, Level.ALL, null);
++            ctx.updateLoggers();
++        }
++
++        @Override
++        public void append(LogEvent event) {
++            if ("LSS".equals(event.getLoggerName())) {
++                rows.add(new LogRow(event.getLevel(), event.getMessage().getFormattedMessage()));
++            }
++        }
++
++        List<LogRow> rows() {
++            return rows;
++        }
++
++        @Override
++        public void close() {
++            ctx.getConfiguration().getRootLogger().removeAppender(getName());
++            ctx.updateLoggers();
++            stop();
++        }
++    }
++}
+diff --git a/paper/src/test/java/dev/vox/lss/paper/PaperConfigValidationTest.java b/paper/src/test/java/dev/vox/lss/paper/PaperConfigValidationTest.java
+index 19924d1..d4d4338 100644
+--- a/paper/src/test/java/dev/vox/lss/paper/PaperConfigValidationTest.java
++++ b/paper/src/test/java/dev/vox/lss/paper/PaperConfigValidationTest.java
+@@ -43,6 +43,11 @@ class PaperConfigValidationTest {
+         assertTrue(new PaperConfig().enableV19Compat);
+     }
+ 
++    @Test
++    void viaMismatchGuardDefaultsOn() {
++        assertTrue(new PaperConfig().enableViaMismatchGuard);
++    }
++
+     @Test
+     void validateClampsInheritedFieldsAndGuardsUpdateEvents() {
+         PaperConfig c = new PaperConfig();
+diff --git a/paper/src/test/java/dev/vox/lss/paper/PluginYmlContractTest.java b/paper/src/test/java/dev/vox/lss/paper/PluginYmlContractTest.java
+index e5c7c1b..665a5f8 100644
+--- a/paper/src/test/java/dev/vox/lss/paper/PluginYmlContractTest.java
++++ b/paper/src/test/java/dev/vox/lss/paper/PluginYmlContractTest.java
+@@ -134,6 +134,15 @@ class PluginYmlContractTest {
+                 "the placeholder must stay single-quoted so the YAML stays parseable pre-expansion");
+     }
+ 
++    @Test
++    void viaVersionIsNotAHardDependency() {
++        // ViaVersion must stay optional: the plugin must load and run without it installed.
++        var depend = yml.getStringList("depend");
++        org.junit.jupiter.api.Assertions.assertTrue(
++                depend == null || depend.isEmpty() || !depend.contains("ViaVersion"),
++                "ViaVersion must not be a hard dependency");
++    }
++
+     @Test
+     void pluginYmlShipsOnTheClasspath() {
+         assertNotNull(LSSPaperPlugin.class.getResource("/plugin.yml"),
