@@ -34,11 +34,6 @@ jobs:
               '\n    testImplementation "org.mockito:mockito-core:5.20.0"\n'
               '    testRuntimeOnly "org.junit.platform:junit-platform-launcher:1.11.4"',
           )
-          inject(
-              Path("paper/build.gradle"),
-              "testImplementation 'org.mockito:mockito-core:5.20.0'",
-              "\n    testImplementation 'org.mockito:mockito-inline:5.20.0'",
-          )
           PY
           ./gradlew --no-daemon --max-workers=1 :common:compileJava :fabric:testClasses
           ./gradlew --no-daemon --max-workers=1 :paper:testClasses
