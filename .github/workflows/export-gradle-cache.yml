@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: 871dcd0a2a1ea5d1526a25d692c13b7e37f2d68a
+          ref: task-base-101
 
       - uses: actions/setup-java@v5
         with:
