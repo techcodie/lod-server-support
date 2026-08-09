@@ -1,0 +1,646 @@
+diff --git a/common/src/main/java/dev/vox/lss/common/HandshakeGate.java b/common/src/main/java/dev/vox/lss/common/HandshakeGate.java
+index 4800c02..7f73b87 100644
+--- a/common/src/main/java/dev/vox/lss/common/HandshakeGate.java
++++ b/common/src/main/java/dev/vox/lss/common/HandshakeGate.java
+@@ -22,6 +22,18 @@ public final class HandshakeGate {
+          * its LSS disabled (no LodRequestManager is created).
+          */
+         VERSION_MISMATCH,
++        /**
++         * A LEGACY-dialect handshake from a client Via positively reports as running a
++         * DIFFERENT MC version (XVER §7): its native-id column bytes are for another
++         * registry set, so the session cannot be served. No reply — silence is each
++         * legacy client's native "no LSS here" signal (the v19/v18 client ladders fall
++         * through to their next rung and terminal disarm; a v16 client stays dark) —
++         * and the call site logs one INFO line naming the versions. Never fires for
++         * {@link WireDialect#CURRENT} (a v20 client carries mcDataVersion and is always
++         * servable), never fires on probe no-signal (fail-open), and
++         * {@code enableViaMismatchGuard=false} removes it entirely.
++         */
++        VIA_MISMATCH,
+         /**
+          * No LOD consumer on the client — reply with the session config, but never
+          * register: registering would only create a zombie state that ignores every
+@@ -79,9 +91,10 @@ public final class HandshakeGate {
+      * @param dialect          wire shapes the reply/session must use (version rung's choice)
+      */
+     public record Decision(Outcome outcome, boolean effectiveEnabled, WireDialect dialect) {
+-        /** Whether any reply may be sent at all (false only on version skew). */
++        /** Whether any reply may be sent at all (false on version skew and on the
++         *  cross-MC Via mismatch — both must stay silent). */
+         public boolean sendSessionConfig() {
+-            return outcome != Outcome.VERSION_MISMATCH;
++            return outcome != Outcome.VERSION_MISMATCH && outcome != Outcome.VIA_MISMATCH;
+         }
+ 
+         /** Whether to register the player for LOD request processing. */
+@@ -103,11 +116,16 @@ public final class HandshakeGate {
+      * @param v16CompatEnabled      server config {@code enableV16Compat} flag
+      * @param v18CompatEnabled      server config {@code enableV18Compat} flag
+      * @param v19CompatEnabled      server config {@code enableV19Compat} flag
++     * @param viaMismatch           true when Via POSITIVELY reports this client on a
++     *                              different MC version (call sites compose
++     *                              {@code enableViaMismatchGuard} × the ViaProbe ×
++     *                              the server's native protocol; false on no-signal —
++     *                              XVER §7, fail-open)
+      */
+     public static Decision evaluate(int clientProtocolVersion, int clientCapabilities,
+                                     boolean configEnabled, boolean servicePresent,
+                                     boolean v16CompatEnabled, boolean v18CompatEnabled,
+-                                    boolean v19CompatEnabled) {
++                                    boolean v19CompatEnabled, boolean viaMismatch) {
+         WireDialect dialect;
+         if (clientProtocolVersion == LSSConstants.PROTOCOL_VERSION) {
+             dialect = WireDialect.CURRENT;
+@@ -123,6 +141,12 @@ public final class HandshakeGate {
+         } else {
+             return new Decision(Outcome.VERSION_MISMATCH, false, WireDialect.CURRENT);
+         }
++        if (viaMismatch && dialect != WireDialect.CURRENT) {
++            // XVER §7: a legacy dialect cannot carry cross-MC bytes — deny BEFORE any
++            // register/reply rung, silently. CURRENT ignores the flag: a v20 client's
++            // mcDataVersion makes it servable on any MC version.
++            return new Decision(Outcome.VIA_MISMATCH, false, dialect);
++        }
+         boolean effectiveEnabled = configEnabled && servicePresent;
+         if ((clientCapabilities & LSSConstants.CAPABILITY_VOXEL_COLUMNS) == 0) {
+             return new Decision(Outcome.NO_CONSUMER, effectiveEnabled, dialect);
+@@ -133,8 +157,21 @@ public final class HandshakeGate {
+         return new Decision(Outcome.REGISTER, true, dialect);
+     }
+ 
++    /** Pre-Via-guard overload (no mismatch signal): kept so every existing gate pin
++     *  stays byte-identical — {@code viaMismatch=false} is exactly the guard-off /
++     *  probe-no-signal behavior. Production call sites use the 8-arg form; each
++     *  platform's wiring pin covers the composition. */
++    public static Decision evaluate(int clientProtocolVersion, int clientCapabilities,
++                                    boolean configEnabled, boolean servicePresent,
++                                    boolean v16CompatEnabled, boolean v18CompatEnabled,
++                                    boolean v19CompatEnabled) {
++        return evaluate(clientProtocolVersion, clientCapabilities, configEnabled,
++                servicePresent, v16CompatEnabled, v18CompatEnabled, v19CompatEnabled,
++                false);
++    }
++
+     /** Pre-v19-compat overload (v19 rung disabled): kept so existing gate tests keep
+-     *  pinning the two-rung ladder unchanged. Production call sites use the 7-arg form —
++     *  pinning the two-rung ladder unchanged. Production call sites use the 8-arg form —
+      *  a call site left on this overload silently drops v19 clients to the v16 fallback,
+      *  which is why each platform pins its PRODUCTION handshake path with a v19 frame. */
+     public static Decision evaluate(int clientProtocolVersion, int clientCapabilities,
+diff --git a/common/src/main/java/dev/vox/lss/common/compat/ViaProbe.java b/common/src/main/java/dev/vox/lss/common/compat/ViaProbe.java
+new file mode 100644
+index 0000000..52a9f14
+--- /dev/null
++++ b/common/src/main/java/dev/vox/lss/common/compat/ViaProbe.java
+@@ -0,0 +1,143 @@
++package dev.vox.lss.common.compat;
++
++import dev.vox.lss.common.LSSLogger;
++
++import java.lang.invoke.MethodHandle;
++import java.lang.invoke.MethodHandles;
++import java.lang.reflect.Method;
++import java.lang.reflect.Modifier;
++import java.util.UUID;
++
++/**
++ * Reflective probe for a Via-translated client's real protocol version (XVER plan §7):
++ * {@code Via.getAPI().getPlayerVersion(uuid)}. A v19/v18/v16 LSS handshake carries no MC
++ * version, and a legacy client on a DIFFERENT MC version cannot be served (its column
++ * bytes are native-id formats for another registry set) — ViaVersion (Paper/Folia) or
++ * ViaFabric (Fabric) being installed is the only way such a client can be connected
++ * directly, and Via's own API is the only place its real version exists. ONE class
++ * serves both platforms: ViaFabric bundles viaversion-common, so the API entry class is
++ * the same name everywhere, and Via classes are not MC classes — no remap concern.
++ *
++ * <p>Zero compile-time dependency (the {@code MoonriseReadCompat}/{@code AntiXrayCompat}
++ * pattern): handles resolve once per JVM off {@code getAPI}'s DECLARED return type (no
++ * instance needed at resolve time). Failure shapes, all FAIL-OPEN (the guard denies
++ * registration, so no-signal must never deny): class absent = Via not installed =
++ * silent no-signal; present-but-unresolvable (API drift) = warn once + no-signal;
++ * every per-call invoke failure — including Via's not-yet-initialized guard
++ * throw ({@code IllegalArgumentException} out of a Guava precondition, verified
++ * upstream) — = no-signal for that call. Via answers {@code -1}
++ * (or the native protocol) for players it isn't translating, so {@link #mismatch}
++ * additionally requires a positive answer.
++ */
++public final class ViaProbe {
++
++    private static final String VIA_CLASS = "com.viaversion.viaversion.api.Via";
++
++    /** No-signal sentinel: the probe cannot say anything about this player. */
++    public static final int NO_SIGNAL = -1;
++
++    /** Class resolution seam — production is {@code Class::forName}; tests inject
++     *  wrong-shape classes without classpath collisions. */
++    @FunctionalInterface
++    interface ClassLookup {
++        Class<?> lookup(String name) throws Throwable;
++    }
++
++    /** Drift-warning sink — production logs via {@link LSSLogger}; tests count. Only
++     *  invoked when the Via class IS present but resolution failed. */
++    @FunctionalInterface
++    interface DriftWarn {
++        void warn(String detail, Throwable cause);
++    }
++
++    @FunctionalInterface
++    private interface PlayerProtocol {
++        int protocolOrNoSignal(UUID uuid);
++    }
++
++    /** Null = Via absent or unresolvable — permanent no-signal for the JVM. */
++    private final PlayerProtocol probe;
++
++    private ViaProbe(PlayerProtocol probe) {
++        this.probe = probe;
++    }
++
++    /** Lazy per-JVM holder: the plugin/mod set cannot change at runtime, so resolution
++     *  runs once, on the first consult — a guard-disabled server never resolves. The
++     *  lookup is NON-INITIALIZING (m4): a throwing Via {@code <clinit>} must read as
++     *  probe-absent, never poison this class with an ExceptionInInitializerError. */
++    private static final class Holder {
++        static final ViaProbe INSTANCE = build(
++                name -> Class.forName(name, false, ViaProbe.class.getClassLoader()),
++                (detail, cause) -> LSSLogger.warn("ViaVersion present but its API did not"
++                        + " resolve (" + detail + ") — the cross-MC mismatch guard is"
++                        + " inactive; legacy LSS clients on other MC versions will not be"
++                        + " detected", cause));
++    }
++
++    /** Instance-scoped for order-independent tests; production rides {@link Holder}. */
++    static ViaProbe build(ClassLookup lookup, DriftWarn warn) {
++        Class<?> via;
++        try {
++            via = lookup.lookup(VIA_CLASS);
++        } catch (Throwable absent) {
++            return new ViaProbe(null); // Via not installed — the common case, silent
++        }
++        try {
++            Method getApi = via.getMethod("getAPI");
++            if (!Modifier.isStatic(getApi.getModifiers())) {
++                throw new NoSuchMethodException("getAPI is not static");
++            }
++            Class<?> apiType = getApi.getReturnType();
++            Method getVersion = apiType.getMethod("getPlayerVersion", UUID.class);
++            if (getVersion.getReturnType() != int.class) {
++                throw new NoSuchMethodException("getPlayerVersion(UUID) returns "
++                        + getVersion.getReturnType());
++            }
++            MethodHandle hGetApi = MethodHandles.publicLookup().unreflect(getApi);
++            MethodHandle hGetVersion = MethodHandles.publicLookup().unreflect(getVersion);
++            return new ViaProbe(uuid -> {
++                try {
++                    Object api = hGetApi.invoke();
++                    if (api == null) return NO_SIGNAL;
++                    return (int) hGetVersion.invoke(api, uuid);
++                } catch (Throwable perCall) {
++                    // Incl. Via's not-yet-initialized precondition throw — a later
++                    // call may succeed, so no latch, no log (handshakes are rare).
++                    return NO_SIGNAL;
++                }
++            });
++        } catch (Throwable drift) {
++            warn.warn(drift.toString(), drift);
++            return new ViaProbe(null);
++        }
++    }
++
++    /** The player's protocol per Via, or {@link #NO_SIGNAL}. Instance form for tests. */
++    int playerProtocolOrNoSignal(UUID uuid) {
++        var p = this.probe;
++        return p == null ? NO_SIGNAL : p.protocolOrNoSignal(uuid);
++    }
++
++    /** The §7 mismatch RULE, pure and shared by both platforms' call sites (so the
++     *  fail-open semantics cannot drift between them): mismatch requires a POSITIVE
++     *  Via answer that differs from the server's native protocol — no-signal never
++     *  denies. */
++    public static boolean isMismatch(int viaProtocol, int nativeProtocol) {
++        return viaProtocol > 0 && viaProtocol != nativeProtocol;
++    }
++
++    /** Production probe read — call sites capture this once per handshake (the log
++     *  line wants the real number), apply {@link #isMismatch}, and additionally gate
++     *  on {@code enableViaMismatchGuard} BEFORE consulting (a disabled guard must
++     *  never trigger resolution). Catch-all belt (m4): this runs inside a network
++     *  handler, and an escaped Holder-init Throwable would surface there as an
++     *  ExceptionInInitializerError, then NoClassDefFoundError forever. */
++    public static int playerProtocol(UUID uuid) {
++        try {
++            return Holder.INSTANCE.playerProtocolOrNoSignal(uuid);
++        } catch (Throwable belt) {
++            return NO_SIGNAL;
++        }
++    }
++}
+diff --git a/common/src/main/java/dev/vox/lss/common/config/ServerConfigBase.java b/common/src/main/java/dev/vox/lss/common/config/ServerConfigBase.java
+index 0d88217..4bf35bf 100644
+--- a/common/src/main/java/dev/vox/lss/common/config/ServerConfigBase.java
++++ b/common/src/main/java/dev/vox/lss/common/config/ServerConfigBase.java
+@@ -234,6 +234,21 @@ public abstract class ServerConfigBase extends JsonConfig {
+      * switch to restore the strict version gate for 19. No clamp: boolean.
+      */
+     public boolean enableV19Compat = true;
++    /**
++     * When true (default), a legacy-protocol handshake (19/18/16) from a client that
++     * ViaVersion/ViaFabric POSITIVELY reports as running a different MC version is
++     * answered with silence instead of a compat session
++     * (docs/planning/cross-version-identity-encoding-plan.md §7): legacy column bytes
++     * are native-id formats for THIS MC version's registries, so a cross-MC legacy
++     * client would receive garbage it cannot decode. One INFO line names the versions.
++     * Fail-open — without Via, or when Via has no signal for the player, behavior is
++     * unchanged. This is the operator override: the guard denies registration off a
++     * third-party reflective API, and a Via API drift that misreported protocols would
++     * otherwise lock out legitimate same-MC legacy clients with no recourse — set
++     * false to disarm. Current-protocol (v20) clients are never affected (their
++     * handshake carries the MC data version). No clamp: boolean.
++     */
++    public boolean enableViaMismatchGuard = true;
+     /**
+      * The LOD store switch (docs/planning/lod-store-implementation-plan.md):
+      * "off" (no store — the kill switch every store gate A/Bs against) and
+diff --git a/fabric/src/main/java/dev/vox/lss/networking/server/LSSServerNetworking.java b/fabric/src/main/java/dev/vox/lss/networking/server/LSSServerNetworking.java
+index 8903895..5b23808 100644
+--- a/fabric/src/main/java/dev/vox/lss/networking/server/LSSServerNetworking.java
++++ b/fabric/src/main/java/dev/vox/lss/networking/server/LSSServerNetworking.java
+@@ -13,6 +13,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+ import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
++import net.minecraft.SharedConstants;
+ import net.minecraft.resources.ResourceKey;
+ import net.minecraft.server.MinecraftServer;
+ import net.minecraft.server.level.ServerLevel;
+@@ -199,6 +200,28 @@ public class LSSServerNetworking {
+     public static void handleHandshake(HandshakeC2SPayload payload, ServerPlayer player,
+                                        RequestProcessingService service,
+                                        SessionConfigResponder responder) {
++        // XVER §7: consult Via for the client's REAL protocol (a legacy LSS handshake
++        // carries no MC version). Captured once so the log line and the gate see the
++        // same number; the ternary keeps a disabled guard from ever triggering
++        // resolution. Deliberately consulted for v20 handshakes too (the gate discards
++        // it there) — the answer is future diagnostics, and the probe is one cached
++        // MethodHandle invoke per join (review m12, kept with rationale).
++        var config = LSSServerConfig.CONFIG;
++        int viaProtocol = config.enableViaMismatchGuard
++                ? dev.vox.lss.common.compat.ViaProbe.playerProtocol(player.getUUID())
++                : dev.vox.lss.common.compat.ViaProbe.NO_SIGNAL;
++        handleHandshake(payload, player, service, responder,
++                viaProtocol, SharedConstants.getProtocolVersion());
++    }
++
++    /** The Via-signal seam (review MAJOR-2, mirroring the Paper overload pair): the
++     *  probe read happens in the caller above, so a gametest can force a mismatch
++     *  through the PRODUCTION ladder — without this seam no test JVM can produce a
++     *  VIA_MISMATCH on Fabric at all (no real Via in any tier). */
++    public static void handleHandshake(HandshakeC2SPayload payload, ServerPlayer player,
++                                       RequestProcessingService service,
++                                       SessionConfigResponder responder,
++                                       int viaProtocol, int nativeProtocol) {
+         LSSLogger.info(Brand.shortName() + " handshake received from " + player.getName().getString()
+                 + " (protocol v" + payload.protocolVersion()
+                 + ", capabilities=" + payload.capabilities() + ")");
+@@ -206,8 +229,25 @@ public class LSSServerNetworking {
+         var config = LSSServerConfig.CONFIG;
+         var decision = HandshakeGate.evaluate(payload.protocolVersion(),
+                 payload.capabilities(), config.enabled, service != null,
+-                config.enableV16Compat, config.enableV18Compat, config.enableV19Compat);
++                config.enableV16Compat, config.enableV18Compat, config.enableV19Compat,
++                dev.vox.lss.common.compat.ViaProbe.isMismatch(viaProtocol, nativeProtocol));
+ 
++        if (decision.outcome() == HandshakeGate.Outcome.VIA_MISMATCH) {
++            // Silent deny; "Minecraft protocol" because the handshake INFO one line up
++            // prints an LSS protocol number and the two spaces must not be conflated
++            // (review m5). Like VERSION_MISMATCH's early return below, an EXISTING
++            // registration deliberately survives (review m1): the reachable window is
++            // a no-signal FIRST handshake (Via mid-init) that registered legacy, then
++            // a later re-handshake denying — bounded to that race, healed by rejoin;
++            // shedding here would add remove-path surface for a corner Via itself
++            // closes seconds later.
++            LSSLogger.info("LOD unavailable for " + player.getName().getString()
++                    + ": Via reports client Minecraft protocol " + viaProtocol
++                    + " vs server " + nativeProtocol + " (cross-MC legacy session"
++                    + " cannot be served) — the client must update "
++                    + Brand.shortName());
++            return;
++        }
+         if (!decision.sendSessionConfig()) {
+             // See HandshakeGate.Outcome.VERSION_MISMATCH: replying would kick the player.
+             // An EXISTING registration deliberately survives this rung (and NO_CONSUMER
+diff --git a/paper/src/main/java/dev/vox/lss/paper/LSSPaperPlugin.java b/paper/src/main/java/dev/vox/lss/paper/LSSPaperPlugin.java
+index 903ebb5..8c9b5e8 100644
+--- a/paper/src/main/java/dev/vox/lss/paper/LSSPaperPlugin.java
++++ b/paper/src/main/java/dev/vox/lss/paper/LSSPaperPlugin.java
+@@ -307,7 +307,13 @@ public class LSSPaperPlugin extends JavaPlugin implements PluginMessageListener,
+ 
+     private void handleHandshake(Player bukkitPlayer, ServerPlayer nmsPlayer, byte[] data) {
+         var service = this.requestService;
++        // XVER §7: capture Via's answer once per handshake (the && keeps a disabled
++        // guard from ever triggering probe resolution); the pure seam applies the rule.
++        int viaProtocol = this.lssConfig.enableViaMismatchGuard
++                ? dev.vox.lss.common.compat.ViaProbe.playerProtocol(nmsPlayer.getUUID())
++                : dev.vox.lss.common.compat.ViaProbe.NO_SIGNAL;
+         handleHandshake(data, nmsPlayer.getName().getString(), this.lssConfig, service != null,
++                viaProtocol, net.minecraft.SharedConstants.getProtocolVersion(),
+                 (dialect, enabled, lodDistanceChunks, syncCap, genCap, generationEnabled) -> {
+                     // A cross-dialect re-handshake sheds the stale compat identities it is
+                     // NOT — otherwise columns keep shipping the old dialect's shape and
+@@ -406,6 +412,19 @@ public class LSSPaperPlugin extends JavaPlugin implements PluginMessageListener,
+     static void handleHandshake(byte[] data, String playerName, PaperConfig config,
+                                 boolean servicePresent, SessionConfigSender configSender,
+                                 HandshakeRegistrar registrar) {
++        // No-Via-signal overload: every pre-C5 glue pin rides this unchanged. The
++        // native slot gets 0 — a value no real MC protocol can be — never an LSS
++        // protocol number (review m6: pairing NO_SIGNAL with PROTOCOL_VERSION was a
++        // landmine one edit from denying everyone via 20 != <real via protocol>).
++        handleHandshake(data, playerName, config, servicePresent,
++                dev.vox.lss.common.compat.ViaProbe.NO_SIGNAL, 0,
++                configSender, registrar);
++    }
++
++    static void handleHandshake(byte[] data, String playerName, PaperConfig config,
++                                boolean servicePresent, int viaProtocol, int nativeProtocol,
++                                SessionConfigSender configSender,
++                                HandshakeRegistrar registrar) {
+         var handshake = PaperPayloadHandler.decodeHandshake(data);
+         if (handshake == null) return;
+ 
+@@ -415,8 +434,24 @@ public class LSSPaperPlugin extends JavaPlugin implements PluginMessageListener,
+ 
+         var decision = HandshakeGate.evaluate(handshake.protocolVersion(),
+                 handshake.capabilities(), config.enabled, servicePresent,
+-                config.enableV16Compat, config.enableV18Compat, config.enableV19Compat);
+-
++                config.enableV16Compat, config.enableV18Compat, config.enableV19Compat,
++                dev.vox.lss.common.compat.ViaProbe.isMismatch(viaProtocol, nativeProtocol));
++
++        if (decision.outcome() == HandshakeGate.Outcome.VIA_MISMATCH) {
++            // Silent deny — "Minecraft protocol" to keep the number space distinct
++            // from the LSS protocol the handshake INFO above prints (review m5). Like
++            // VERSION_MISMATCH below, an EXISTING registration deliberately survives
++            // (review m1): the reachable window is a no-signal FIRST handshake (Via
++            // mid-init) that registered legacy, then a later denial — bounded to that
++            // race, healed by rejoin (the re-attach prompt loop this can enter is
++            // 1/minute-bounded; see sendReattachPromptPayload).
++            LSSLogger.info("LOD unavailable for " + playerName
++                    + ": Via reports client Minecraft protocol " + viaProtocol
++                    + " vs server " + nativeProtocol + " (cross-MC legacy session"
++                    + " cannot be served) — the client must update "
++                    + Brand.shortName());
++            return;
++        }
+         if (!decision.sendSessionConfig()) {
+             // See HandshakeGate.Outcome.VERSION_MISMATCH: replying would kick the player.
+             // An EXISTING registration deliberately survives this rung (and NO_CONSUMER):
+diff --git a/paper/src/main/java/dev/vox/lss/paper/PaperRequestProcessingService.java b/paper/src/main/java/dev/vox/lss/paper/PaperRequestProcessingService.java
+index 28c4b7e..d64bf56 100644
+--- a/paper/src/main/java/dev/vox/lss/paper/PaperRequestProcessingService.java
++++ b/paper/src/main/java/dev/vox/lss/paper/PaperRequestProcessingService.java
+@@ -697,6 +697,12 @@ public class PaperRequestProcessingService {
+     ReattachPromptSender reattachPromptSender = this::sendReattachPromptPayload;
+ 
+     private void sendReattachPromptPayload(ServerPlayer player) {
++        // C5 note (review m14): this is the one SessionConfig send outside the
++        // handshake gate, so it is not Via-guarded. Reachable only through the
++        // narrow registered-then-denied window (a no-signal FIRST handshake during
++        // Via init) — there it produces a prompt→handshake→denial cycle bounded to
++        // one prompt per REATTACH_PROMPT_INTERVAL, which the guard's INFO line makes
++        // visible; a rejoin heals it.
+         PaperPayloadHandler.sendSessionConfigV16(player.getBukkitEntity(),
+                 this.config.enabled, this.config.lodDistanceChunks,
+                 LSSConstants.SYNC_ON_LOAD_SLOT_CAP,
+diff --git a/paper/src/main/resources/plugin.yml b/paper/src/main/resources/plugin.yml
+index b79ca4c..555a069 100644
+--- a/paper/src/main/resources/plugin.yml
++++ b/paper/src/main/resources/plugin.yml
+@@ -8,6 +8,12 @@ api-version: '26.2'
+ # validated; concurrent multi-region ingress untested. Do NOT treat the flag's presence as a
+ # claim that SOAK_PLATFORM=folia has passed on 26.2.
+ folia-supported: true
++# C5 (XVER §7): the Via mismatch guard reflectively reads ViaVersion's API when the
++# plugin is present. softdepend keeps Spigot's classloader from logging the one-time
++# "loaded class ... which is not a depend/softdepend" warning on the first handshake —
++# noise that reads like an LSS bug. No hard dependency: without Via the probe is a
++# silent no-signal.
++softdepend: [ViaVersion]
+ description: Paper Plugin that provides unofficial multiplayer support for Voxy.
+ author: VoX
+ website: https://modrinth.com/plugin/lod-server-support
+diff --git a/scripts/check_soak.py b/scripts/check_soak.py
+index 0458e18..c455880 100644
+--- a/scripts/check_soak.py
++++ b/scripts/check_soak.py
+@@ -171,7 +171,13 @@ SERVER_CONFIG_BOOL_KEYS = frozenset({"enabled", "enableChunkGeneration", "useBac
+                                      # an armed soak is expected-identical — the S-8
+                                      # same-commit allowlist rule (the twice-shipped
+                                      # R4-class defect).
+-                                     "lodYieldsToVanillaTransport"})
++                                     "lodYieldsToVanillaTransport",
++                                     # Via cross-MC mismatch guard (v0.10.0 C5, XVER §7)
++                                     # — listed at introduction per the same-commit
++                                     # allowlist rule. Soaks run without Via, so the
++                                     # probe is no-signal and either value is provably
++                                     # inert (an A/B pins exactly that).
++                                     "enableViaMismatchGuard"})
+ SERVER_CONFIG_INT_KEYS = frozenset({
+     "lodDistanceChunks", "bytesPerSecondLimitPerPlayer", "diskReaderThreads",
+     "sendQueueLimitPerPlayer", "bytesPerSecondLimitGlobal",
+diff --git a/test-server.sh b/test-server.sh
+index 7ae7461..d2a2d53 100755
+--- a/test-server.sh
++++ b/test-server.sh
+@@ -79,6 +79,21 @@ esac
+ # when unset, so a previous session's tracer never lingers). Output:
+ # test-server/fabric/logs/lss-move-trace.jsonl; validate with scripts/check_move_trace.py.
+ LSS_MOVE_TRACE="${LSS_MOVE_TRACE:-0}"
++
++# Via variant (XVER plan §7 / mega plan R-8): LSS_VIA=1 stages ViaFabric+ViaBackwards on
++# the Fabric server (ViaVersion+ViaBackwards on Paper) so the C5 cross-MC mismatch guard
++# has something to fire against — the guard is DEAD CODE on a rig without Via. Old-MC
++# clients for the denial test live in the lss-multi-test Prism profiles (v0.8.0-era jars).
++# Watch for the "LOD unavailable for <name>: Via reports client protocol X vs server Y"
++# INFO line; enableViaMismatchGuard=false in the staged config is the kill-switch A/B.
++# Default off — every non-via run parks the jars so the baseline stays Via-free.
++# Version resolution rides the Modrinth API (latest for this MC line) rather than pinned
++# URLs, so the variant keeps working as Via ships new builds.
++LSS_VIA="${LSS_VIA:-0}"
++# The guard's rig kill switch (review MAJOR-1): the staging REWRITES the config each
++# run, so a hand-edited enableViaMismatchGuard=false would be silently clobbered before
++# the JVM starts — this knob is the supported A/B lever. Default 1 (the shipped default).
++LSS_VIA_GUARD="${LSS_VIA_GUARD:-1}"
+ stage_move_trace_marker() {
+     # Called just before each Fabric launch; the tracer reads the marker once at
+     # SERVER_STARTING, so staging at launch time is race-free by operation.
+@@ -198,6 +213,37 @@ print(stable[0]['downloads']['server:default']['url']) if stable else print('')
+     curl -fsSL -o "$dest" "$url"
+ }
+ 
++# Resolve the newest Modrinth version file for a project/loader/MC-line and download it.
++# Used by the Via variant (no pinned URLs — Via ships frequently and any MC-26.2 build
++# works for the guard's live pull).
++download_modrinth_latest() {
++    local slug="$1" loader="$2" mc_version="$3" dest="$4"
++    if [ -f "$dest" ] || [ -f "$dest.disabled" ]; then
++        echo "  Already present: $(basename "$dest")"
++        return 0
++    fi
++    echo "  Resolving ${slug} (${loader}, MC ${mc_version}) via Modrinth..."
++    local url
++    url=$(curl -fsSL -A "lod-server-support/test-server"         "https://api.modrinth.com/v2/project/${slug}/version?loaders=%5B%22${loader}%22%5D&game_versions=%5B%22${mc_version}%22%5D"         | python3 -c "
++import sys, json
++versions = json.load(sys.stdin)
++for v in versions:
++    files = v.get('files', [])
++    primary = next((f for f in files if f.get('primary')), files[0] if files else None)
++    if primary:
++        print(primary['url'])
++        break
++")
++    if [ -z "$url" ]; then
++        echo "ERROR: no ${slug} build for ${loader}/MC ${mc_version} on Modrinth" >&2
++        return 1
++    fi
++    echo "  Downloading: $(basename "$url")"
++    # .part + mv (review m8): a truncated curl must not leave a file the
++    # already-present early-return then trusts forever.
++    curl -fsSL -o "$dest.part" "$url" && mv "$dest.part" "$dest"
++}
++
+ # build_*_jar: build only when the jar is missing (first-time setup). Pass force=1 to
+ # always run gradle — `update` promises a REBUILD, and skipping it silently reinstalls
+ # whatever stale jar a previous build left (gradle's up-to-date check keeps no-ops cheap).
+@@ -281,7 +327,7 @@ EOF
+ # LSS_LOD_DISTANCE to dial it back on a small box.
+ write_lss_config() {
+     local dir="$1"
+-    echo "  Writing lss-server-config.json (shipped defaults; lodStore=${LSS_LODSTORE}, backfill=${LSS_LODSTORE_BACKFILL}${LSS_LOD_DISTANCE:+, lodDistance=${LSS_LOD_DISTANCE}})"
++    echo "  Writing lss-server-config.json (shipped defaults; lodStore=${LSS_LODSTORE}, backfill=${LSS_LODSTORE_BACKFILL}${LSS_LOD_DISTANCE:+, lodDistance=${LSS_LOD_DISTANCE}}$([ "$LSS_VIA_GUARD" = 0 ] && echo ', viaGuard=OFF'))"
+     mkdir -p "$dir"
+     cat > "$dir/lss-server-config.json" << EOF
+ {
+@@ -294,6 +340,9 @@ write_lss_config() {
+     fi)$(
+     if [ -n "$LSS_LOD_DISTANCE" ]; then
+         printf ',\n  "lodDistanceChunks": %s' "$LSS_LOD_DISTANCE"
++    fi)$(
++    if [ "$LSS_VIA_GUARD" = 0 ]; then
++        printf ',\n  "enableViaMismatchGuard": false'
+     fi)
+ }
+ EOF
+@@ -332,6 +381,8 @@ setup_fabric() {
+     rm -f "$mods_dir"/lod-server-support-fabric*.jar
+     cp "$lss_jar" "$mods_dir/"
+     echo "  Installed: $(basename "$lss_jar")"
++
++    stage_via_fabric
+ }
+ 
+ run_fabric() {
+@@ -411,6 +462,61 @@ else:
+ EOF
+ }
+ 
++# Park/unpark Paper plugin jars by filename prefix (the set_mod_enabled twin — Paper
++# only loads *.jar, so .jar.disabled is ignored the same way).
++set_paper_plugin_enabled() {
++    local prefix="$1" enabled="$2" f
++    mkdir -p "$PAPER_DIR/plugins"
++    if [ "$enabled" = true ]; then
++        for f in "$PAPER_DIR/plugins/$prefix"*.jar.disabled; do
++            [ -e "$f" ] || continue
++            mv "$f" "${f%.disabled}"
++            echo "  Re-enabled: $(basename "${f%.disabled}")"
++        done
++    else
++        for f in "$PAPER_DIR/plugins/$prefix"*.jar; do
++            [ -e "$f" ] || continue
++            mv "$f" "$f.disabled"
++            echo "  Disabled: $(basename "$f")"
++        done
++    fi
++}
++
++# Stage or park the Via pair per LSS_VIA on both platforms (called from each setup).
++stage_via_fabric() {
++    if [ "$LSS_VIA" = 1 ]; then
++        echo "=== Staging Via (Fabric): ViaFabric + ViaBackwards ==="
++        # Non-fatal (review m9): a Modrinth outage must not abort the whole setup —
++        # but a rig run whose entire point is Via needs to hear about it loudly.
++        if download_modrinth_latest viafabric fabric "$FABRIC_MC_VERSION" "$FABRIC_DIR/mods/viafabric.jar" \
++            && download_modrinth_latest viabackwards fabric "$FABRIC_MC_VERSION" "$FABRIC_DIR/mods/viabackwards.jar"; then
++            set_mod_enabled viafabric true
++            set_mod_enabled viabackwards true
++        else
++            echo "WARNING: Via staging FAILED — the server will run WITHOUT Via and the" >&2
++            echo "         mismatch guard will be no-signal (nothing to test)." >&2
++        fi
++    else
++        set_mod_enabled viafabric false
++        set_mod_enabled viabackwards false
++    fi
++}
++
++stage_via_paper() {
++    if [ "$LSS_VIA" = 1 ]; then
++        echo "=== Staging Via (Paper): ViaVersion + ViaBackwards ==="
++        download_modrinth_latest viaversion paper "$PAPER_MC_VERSION" "$PAPER_DIR/plugins/viaversion.jar" \
++            || download_modrinth_latest viaversion bukkit "$PAPER_MC_VERSION" "$PAPER_DIR/plugins/viaversion.jar"
++        download_modrinth_latest viabackwards paper "$PAPER_MC_VERSION" "$PAPER_DIR/plugins/viabackwards.jar" \
++            || download_modrinth_latest viabackwards bukkit "$PAPER_MC_VERSION" "$PAPER_DIR/plugins/viabackwards.jar"
++        set_paper_plugin_enabled viaversion true
++        set_paper_plugin_enabled viabackwards true
++    else
++        set_paper_plugin_enabled viaversion false
++        set_paper_plugin_enabled viabackwards false
++    fi
++}
++
+ setup_paper() {
+     echo "=== Setting up Paper server ==="
+     local plugins_dir="$PAPER_DIR/plugins"
+@@ -426,6 +532,7 @@ setup_paper() {
+     write_ops_json "$PAPER_DIR"
+     write_lss_config "$PAPER_DIR/plugins/LodServerSupport"
+     enable_paper_antixray
++    stage_via_paper
+ 
+     echo "=== Installing Paper plugins ==="
+     echo "  Installing LSS..."
+@@ -640,6 +747,22 @@ case "${1:-run}" in
+         echo ""
+         run_fabric
+         ;;
++    run-fabric-via)
++        LSS_VIA=1
++        setup_fabric
++        set_mod_enabled c2me true       # same baseline as run-fabric, only Via differs
++        set_mod_enabled antixray false
++        echo ""
++        echo "=== Starting Fabric server (ViaFabric + ViaBackwards enabled) ==="
++        echo "  The C5 mismatch guard's live rig: join with an OLD-MC client (lss-multi-test"
++        echo "  Prism profiles) running a v0.8.x/v0.9.x LSS build and watch for the"
++        echo "  'LOD unavailable for <name>: Via reports client protocol X vs server Y' INFO."
++        echo "  Kill-switch A/B: LSS_VIA_GUARD=0 $0 run-fabric-via (the staging rewrites"
++        echo "  the config each run, so a hand-edit would be clobbered — use the knob)."
++        echo "  Connect to: localhost:25564"
++        echo ""
++        run_fabric
++        ;;
+     run-fabric-antixray)
+         setup_fabric
+         set_mod_enabled c2me true       # same baseline as run-fabric, only AntiXray differs
+@@ -734,7 +857,8 @@ case "${1:-run}" in
+         echo "Done."
+         ;;
+     *)
+-        echo "Usage: $0 {setup|run|run-fabric|run-fabric-no-c2me|run-fabric-antixray|run-fabric-store|run-paper|run-paper-store|run-folia|run-legacy|update|clean}"
++        echo "Usage: $0 {setup|run|run-fabric|run-fabric-no-c2me|run-fabric-antixray|run-fabric-via|run-fabric-store|run-paper|run-paper-store|run-folia|run-legacy|update|clean}"
++        echo "  (LSS_VIA=1 stages ViaVersion+ViaBackwards on run-paper too; LSS_VIA_GUARD=0 = guard kill-switch A/B)"
+         echo ""
+         echo "  setup      - Download and set up all servers"
+         echo "  run        - Set up and start all servers (default)"
