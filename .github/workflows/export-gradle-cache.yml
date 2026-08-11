@@ -57,10 +57,26 @@ jobs:
             :paper:verifierWarmRuntimeClasspath
 
       - name: Archive Gradle user home
-        run: tar -cf gradle-user-home.tar -C "${HOME}" .gradle
+        run: |
+          set -eux
+          tar -cf gradle-user-home.tar -C "${HOME}" .gradle
+          sha256sum gradle-user-home.tar | tee gradle-user-home.sha256
 
       - uses: actions/upload-artifact@v5
         with:
           name: gradle-user-home
           path: gradle-user-home.tar
           retention-days: 7
+
+      - name: Publish cache to task release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          SHA256=$(awk '{print $1}' gradle-user-home.sha256)
+          echo "GRADLE_CACHE_SHA256=${SHA256}" >> "$GITHUB_ENV"
+          gh release view task-101-gradle-cache >/dev/null 2>&1 || \
+            gh release create task-101-gradle-cache --title "Task 101 pre-warmed Gradle cache" --notes "Pinned Gradle user home for Sentinel task 101 Docker builds."
+          ASSET=$(gh release view task-101-gradle-cache --json assets --jq '.assets[] | select(.name=="gradle-user-home.tar") | .id' || true)
+          if [ -n "$ASSET" ]; then gh release delete-asset task-101-gradle-cache gradle-user-home.tar -y; fi
+          gh release upload task-101-gradle-cache gradle-user-home.tar --clobber
