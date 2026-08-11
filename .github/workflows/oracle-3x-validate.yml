@@ -1,0 +1,48 @@
+name: Oracle 3x Validate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: task-base-101
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Fetch task patches
+        run: |
+          set -eux
+          mkdir -p .github/task-patches
+          curl -fsSL -o .github/task-patches/golden.patch \
+            https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
+          curl -fsSL -o .github/task-patches/tests.patch \
+            https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/tests.patch
+
+      - name: Oracle attempt ${{ matrix.attempt }} — apply + compile
+        run: |
+          set -eux
+          git apply .github/task-patches/golden.patch
+          git apply .github/task-patches/tests.patch
+          ./gradlew --no-daemon --max-workers=1 \
+            :common:compileJava \
+            :fabric:testClasses \
+            :paper:testClasses
+
+      - name: Oracle attempt ${{ matrix.attempt }} — p2p smoke
+        run: |
+          set -eux
+          ./gradlew --no-daemon --max-workers=1 \
+            :fabric:test \
+            --tests dev.vox.lss.networking.server.HandshakeGateTest
