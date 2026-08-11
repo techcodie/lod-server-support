@@ -350,30 +350,23 @@ def _run_single_test(
     run_env["VERIFIER_TEST_CLASSPATH"] = classpath
 
     standalone = _find_console_standalone(env)
+    launcher_cp = classpath
     if standalone is not None:
-        cmd = [
-            "java",
-            "-jar",
-            str(standalone),
-            "execute",
-            f"--select-method={fqcn}#{method}",
-            f"--reports-dir={report_dir}",
-            f"--class-path={classpath}",
-            "--disable-banner",
-            "--details=tree",
-        ]
-    else:
-        cmd = [
-            "java",
-            "-cp",
-            classpath,
-            "org.junit.platform.console.ConsoleLauncher",
-            f"--select-method={fqcn}#{method}",
-            f"--reports-dir={report_dir}",
-            "--disable-banner",
-            "--details=tree",
-        ]
+        launcher_cp = f"{standalone}{os.pathsep}{classpath}"
+    cmd = [
+        "java",
+        "-cp",
+        launcher_cp,
+        "org.junit.platform.console.ConsoleLauncher",
+        f"--select-method={fqcn}#{method}",
+        f"--reports-dir={report_dir}",
+        "--disable-banner",
+        "--details=tree",
+    ]
     proc = subprocess.run(cmd, cwd=WORKSPACE, env=run_env, text=True, capture_output=True)
+    if proc.returncode != 0 and (proc.stderr or proc.stdout):
+        sys.stderr.write(proc.stdout)
+        sys.stderr.write(proc.stderr)
     xml_files = sorted(report_dir.glob("**/TEST-*.xml"))
     if len(xml_files) != 1:
         return TestExecution(fqcn, method, module, 0, 0, 0, 0, 1, 0, 0)
