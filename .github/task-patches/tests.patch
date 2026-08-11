@@ -1,5 +1,5 @@
 diff --git a/fabric/build.gradle b/fabric/build.gradle
-index 0559c6b..a4f6f14 100644
+index 0559c6b..8290b59 100644
 --- a/fabric/build.gradle
 +++ b/fabric/build.gradle
 @@ -43,6 +43,8 @@ dependencies {
@@ -11,14 +11,6 @@ index 0559c6b..a4f6f14 100644
      // LOD-store Phase 0 experiment deps (docs/planning/lod-store-implementation-plan.md):
      // the codec/schema decision tool (LodStoreExperimentTool, gated on
      // -Plss.store.experiment.regionDir) measures decompress throughput + SQLite page-shape
-@@ -84,6 +86,7 @@ dependencies {
- 
- test {
-     useJUnitPlatform()
-+    environment "VERIFIER_TEST_CLASSPATH", sourceSets.test.runtimeClasspath.asPath
-     // GameTestEntrypointContractTest reads these at runtime (repo-walk); without declaring
-     // them as inputs, adding a gametest class or editing the entrypoint list leaves the
-     // task UP-TO-DATE locally and the contract never re-checks.
 diff --git a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java b/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
 index 1d1f700..f84d122 100644
 --- a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
@@ -729,18 +721,6 @@ index 0000000..3df1602
 +        }
 +    }
 +}
-diff --git a/paper/build.gradle b/paper/build.gradle
-index 88e0a32..c6ba182 100644
---- a/paper/build.gradle
-+++ b/paper/build.gradle
-@@ -47,6 +47,7 @@ def storeNativeStrip = { el ->
- 
- test {
-     useJUnitPlatform()
-+    environment "VERIFIER_TEST_CLASSPATH", sourceSets.test.runtimeClasspath.asPath
-     // ReleaseWorkflowContractTest reads the workflow YAMLs from the source tree; without
-     // declaring them as inputs, a workflow-only edit leaves :paper:test UP-TO-DATE locally
-     // and the contract never re-checks (same pattern as fabric's gametest-listing inputs).
 diff --git a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
 index cc83e20..fdee1ae 100644
 --- a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
