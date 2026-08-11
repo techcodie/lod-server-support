@@ -46,3 +46,4 @@ benchmark-compare-results/
 # Store gate harness output (JFR profiles are huge)
 store-gate-results/
 CLAUDE.local.md
+compress-gate-results/
