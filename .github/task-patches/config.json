@@ -1,0 +1,69 @@
+{
+  "schema_version": "compact-swebench-harborized-v1",
+  "execution": {
+    "commands": [
+      "python3 /tmp/run_junit_verifier.py"
+    ],
+    "selected_test_files_to_run": [
+      "fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java",
+      "fabric/src/test/java/dev/vox/lss/networking/server/HandshakeGateTest.java",
+      "fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java",
+      "fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java",
+      "fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaAbsentFabricMain.java",
+      "fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaPresentFabricMain.java",
+      "paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java",
+      "paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java",
+      "paper/src/test/java/dev/vox/lss/paper/PaperConfigValidationTest.java",
+      "paper/src/test/java/dev/vox/lss/paper/PluginYmlContractTest.java",
+      "paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java",
+      "paper/src/test/java/dev/vox/lss/verifier/paper/PaperProductionHarness.java",
+      "paper/src/test/java/dev/vox/lss/verifier/paper/ViaAbsentPaperMain.java",
+      "paper/src/test/java/dev/vox/lss/verifier/paper/ViaPresentPaperMain.java"
+    ],
+    "env": {},
+    "timeout_sec": 1800
+  },
+  "grading": {
+    "fail_to_pass": [
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::viaClassesAbsentLegacyHandshakeProceedsThroughProductionEntry",
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry",
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::providerPresentNullApiLeavesLegacyHandshakeUnchangedThroughProductionEntry",
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::viaMismatchDeniesEveryLegacyDialectSilentlyThroughProductionEntry",
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::viaMismatchNeverTouchesACurrentClientThroughProductionEntry",
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::versionMismatchOutranksViaGuardThroughProductionEntry",
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::toggleOffIgnoresViaMismatchThroughProductionEntry",
+      "dev.vox.lss.networking.server.LSSServerNetworkingHandshakeGlueTest::viaMismatchLogsBothMinecraftProtocolNumbers",
+      "dev.vox.lss.config.ConfigValidationTest::viaMismatchGuardDefaultsOn",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::viaClassesAbsentPluginStartsNormally",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::viaClassesAbsentLegacyHandshakeProceedsThroughProductionEntry",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::viaMismatchOnALegacyHandshakeIsDeniedSilentlyThroughProductionEntry",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::viaMismatchNeverTouchesACurrentClientThroughProductionEntry",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::providerPresentNullApiLeavesLegacyHandshakeUnchangedThroughProductionEntry",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::viaMismatchLogsBothMinecraftProtocolNumbers",
+      "dev.vox.lss.paper.LSSPaperPluginViaProductionTest::toggleOffIgnoresViaMismatchThroughProductionEntry",
+      "dev.vox.lss.paper.PaperConfigValidationTest::viaMismatchGuardDefaultsOn",
+      "dev.vox.lss.paper.LSSPaperPluginGlueTest::noViaSignalLeavesLegacyHandshakeUnchangedThroughStaticGlue",
+      "dev.vox.lss.paper.PluginYmlContractTest::viaVersionIsNotAHardDependency"
+    ],
+    "pass_to_pass": [
+      "dev.vox.lss.networking.server.HandshakeGateTest::happyPathRepliesAndRegisters",
+      "dev.vox.lss.networking.server.HandshakeGateTest::v19WithCompatEnabledTakesTheNormalLadderWithTheV19Dialect"
+    ],
+    "required_pass": [],
+    "allow_extra_failures": false,
+    "parser": {
+      "framework": "custom",
+      "result_source": "stdout_stderr",
+      "pass_regex": "^TESTRESULT PASS (?P<name>.+)$",
+      "fail_regex": "^TESTRESULT FAIL (?P<name>.+)$"
+    }
+  },
+  "artifacts": {
+    "stdout_log": "/logs/verifier/test-stdout.txt",
+    "stderr_log": "/logs/verifier/test-stderr.txt",
+    "parsed_results": "/logs/verifier/output.json",
+    "report": "/logs/verifier/report.json",
+    "reward": "/logs/verifier/reward.txt"
+  }
+}
