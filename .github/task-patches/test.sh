@@ -348,6 +348,8 @@ def _run_single_test(
 
     run_env = dict(env)
     run_env["VERIFIER_TEST_CLASSPATH"] = classpath
+    if env.get("VERIFIER_TEST_CLASSPATH_FILE"):
+        run_env["VERIFIER_TEST_CLASSPATH_FILE"] = env["VERIFIER_TEST_CLASSPATH_FILE"]
 
     standalone = _find_console_standalone(env)
     launcher_cp = classpath
@@ -469,8 +471,12 @@ def main() -> int:
     executions: list[TestExecution] = []
     for module, selectors in MODULE_TESTS.items():
         cp = _classpath(module, env)
+        cp_file = reports_root / f"{module}-test-classpath.txt"
+        cp_file.write_text(cp, encoding="utf-8")
+        module_env = dict(env)
+        module_env["VERIFIER_TEST_CLASSPATH_FILE"] = str(cp_file)
         for selector in selectors:
-            executions.append(_run_single_test(module, selector, cp, reports_root, env))
+            executions.append(_run_single_test(module, selector, cp, reports_root, module_env))
 
     return _emit_results(token, executions, f2p, p2p)
 
