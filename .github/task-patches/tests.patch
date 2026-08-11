@@ -140,6 +140,14 @@ index 0000000..ca29f7d
 +
 +    /** Full runtime classpath for spawning isolated JVMs (Gradle test workers omit {@code java.class.path}). */
 +    public static String runtimeClasspath() {
++        String fromFile = System.getenv("VERIFIER_TEST_CLASSPATH_FILE");
++        if (fromFile != null && !fromFile.isBlank()) {
++            try {
++                return Files.readString(Path.of(fromFile)).trim();
++            } catch (IOException e) {
++                throw new AssertionError("failed to read VERIFIER_TEST_CLASSPATH_FILE", e);
++            }
++        }
 +        String fromEnv = System.getenv("VERIFIER_TEST_CLASSPATH");
 +        if (fromEnv != null && !fromEnv.isBlank()) {
 +            return fromEnv;
@@ -232,16 +240,19 @@ index 0000000..ca29f7d
 +    }
 +
 +    private static void runIsolated(String mainClass, String scenario, String classpath) {
-+        List<String> cmd = new ArrayList<>();
-+        cmd.add(javaBinary());
-+        cmd.add("-cp");
-+        cmd.add(classpath);
-+        cmd.add(mainClass);
-+        cmd.add(scenario);
-+
-+        ProcessBuilder pb = new ProcessBuilder(cmd);
-+        pb.redirectErrorStream(true);
++        Path cpArgFile = null;
 +        try {
++            cpArgFile = Files.createTempFile("lss-isolated-cp-", ".txt");
++            Files.writeString(cpArgFile, classpath, StandardCharsets.UTF_8);
++            List<String> cmd = new ArrayList<>();
++            cmd.add(javaBinary());
++            cmd.add("-cp");
++            cmd.add("@" + cpArgFile.toAbsolutePath());
++            cmd.add(mainClass);
++            cmd.add(scenario);
++
++            ProcessBuilder pb = new ProcessBuilder(cmd);
++            pb.redirectErrorStream(true);
 +            Process proc = pb.start();
 +            String output;
 +            try (var reader = new BufferedReader(
@@ -257,6 +268,14 @@ index 0000000..ca29f7d
 +        } catch (IOException | InterruptedException e) {
 +            Thread.currentThread().interrupt();
 +            throw new AssertionError("failed to launch isolated JVM for " + mainClass, e);
++        } finally {
++            if (cpArgFile != null) {
++                try {
++                    Files.deleteIfExists(cpArgFile);
++                } catch (IOException ignored) {
++                    // best-effort temp cleanup
++                }
++            }
 +        }
 +    }
 +
@@ -892,6 +911,14 @@ index 0000000..ca29f7d
 +
 +    /** Full runtime classpath for spawning isolated JVMs (Gradle test workers omit {@code java.class.path}). */
 +    public static String runtimeClasspath() {
++        String fromFile = System.getenv("VERIFIER_TEST_CLASSPATH_FILE");
++        if (fromFile != null && !fromFile.isBlank()) {
++            try {
++                return Files.readString(Path.of(fromFile)).trim();
++            } catch (IOException e) {
++                throw new AssertionError("failed to read VERIFIER_TEST_CLASSPATH_FILE", e);
++            }
++        }
 +        String fromEnv = System.getenv("VERIFIER_TEST_CLASSPATH");
 +        if (fromEnv != null && !fromEnv.isBlank()) {
 +            return fromEnv;
@@ -984,16 +1011,19 @@ index 0000000..ca29f7d
 +    }
 +
 +    private static void runIsolated(String mainClass, String scenario, String classpath) {
-+        List<String> cmd = new ArrayList<>();
-+        cmd.add(javaBinary());
-+        cmd.add("-cp");
-+        cmd.add(classpath);
-+        cmd.add(mainClass);
-+        cmd.add(scenario);
-+
-+        ProcessBuilder pb = new ProcessBuilder(cmd);
-+        pb.redirectErrorStream(true);
++        Path cpArgFile = null;
 +        try {
++            cpArgFile = Files.createTempFile("lss-isolated-cp-", ".txt");
++            Files.writeString(cpArgFile, classpath, StandardCharsets.UTF_8);
++            List<String> cmd = new ArrayList<>();
++            cmd.add(javaBinary());
++            cmd.add("-cp");
++            cmd.add("@" + cpArgFile.toAbsolutePath());
++            cmd.add(mainClass);
++            cmd.add(scenario);
++
++            ProcessBuilder pb = new ProcessBuilder(cmd);
++            pb.redirectErrorStream(true);
 +            Process proc = pb.start();
 +            String output;
 +            try (var reader = new BufferedReader(
@@ -1009,6 +1039,14 @@ index 0000000..ca29f7d
 +        } catch (IOException | InterruptedException e) {
 +            Thread.currentThread().interrupt();
 +            throw new AssertionError("failed to launch isolated JVM for " + mainClass, e);
++        } finally {
++            if (cpArgFile != null) {
++                try {
++                    Files.deleteIfExists(cpArgFile);
++                } catch (IOException ignored) {
++                    // best-effort temp cleanup
++                }
++            }
 +        }
 +    }
 +
