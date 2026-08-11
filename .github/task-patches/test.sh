@@ -210,6 +210,15 @@ def _load_required_from_config() -> tuple[list[str], list[str]]:
     return [str(x) for x in f2p], [str(x) for x in p2p]
 
 
+def _usable_gradle_home(path: str | None) -> bool:
+    if not path:
+        return False
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
+
+
 def _gradle_env(report_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     # Prefer a verifier-owned Gradle home outside the agent workspace. Docker images
@@ -218,7 +227,7 @@ def _gradle_env(report_dir: Path) -> dict[str, str]:
     gradle_home: str | None = env.get("VERIFIER_GRADLE_USER_HOME")
     if not gradle_home:
         for candidate in ("/root/.gradle", os.path.expanduser("~/.gradle")):
-            if candidate and Path(candidate).is_dir():
+            if _usable_gradle_home(candidate):
                 gradle_home = candidate
                 break
     if gradle_home:
