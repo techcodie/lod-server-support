@@ -11,56 +11,6 @@ index 0559c6b..8290b59 100644
      // LOD-store Phase 0 experiment deps (docs/planning/lod-store-implementation-plan.md):
      // the codec/schema decision tool (LodStoreExperimentTool, gated on
      // -Plss.store.experiment.regionDir) measures decompress throughput + SQLite page-shape
-diff --git a/fabric/src/test/java/com/viaversion/viaversion/api/Via.java b/fabric/src/test/java/com/viaversion/viaversion/api/Via.java
-new file mode 100644
-index 0000000..bf409d9
---- /dev/null
-+++ b/fabric/src/test/java/com/viaversion/viaversion/api/Via.java
-@@ -0,0 +1,22 @@
-+package com.viaversion.viaversion.api;
-+
-+import java.util.UUID;
-+
-+/**
-+ * Real-package-name stub of ViaVersion's static entry class — see {@link ViaAPI}.
-+ * Tests drive {@link #API} / {@link #throwOnGetApi}; glue tests reset both in {@code @BeforeEach}.
-+ */
-+public final class Via {
-+    private Via() {}
-+
-+    public static volatile ViaAPI<UUID> API;
-+    public static volatile RuntimeException throwOnGetApi;
-+
-+    /** Raw return type, like upstream ({@code public static ViaAPI getAPI()}). */
-+    @SuppressWarnings("rawtypes")
-+    public static ViaAPI getAPI() {
-+        var t = throwOnGetApi;
-+        if (t != null) throw t;
-+        return API;
-+    }
-+}
-diff --git a/fabric/src/test/java/com/viaversion/viaversion/api/ViaAPI.java b/fabric/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
-new file mode 100644
-index 0000000..67c4fe6
---- /dev/null
-+++ b/fabric/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
-@@ -0,0 +1,16 @@
-+package com.viaversion.viaversion.api;
-+
-+import java.util.UUID;
-+
-+/**
-+ * Real-package-name stub of ViaVersion's API surface for unit tests.
-+ */
-+public interface ViaAPI<T> {
-+
-+    int getPlayerVersion(T player);
-+
-+    @SuppressWarnings("unchecked")
-+    default int getPlayerVersion(UUID uuid) {
-+        return getPlayerVersion((T) uuid);
-+    }
-+}
 diff --git a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java b/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
 index 1d1f700..f84d122 100644
 --- a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
@@ -82,11 +32,386 @@ index 1d1f700..f84d122 100644
          var c = serverConfig();
 diff --git a/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java b/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java
 new file mode 100644
-index 0000000..8fce501
+index 0000000..6c44ae6
 --- /dev/null
 +++ b/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,58 @@
 +package dev.vox.lss.networking.server;
++
++import dev.vox.lss.verifier.ViaClasspathIsolation;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Production Fabric wiring exercised in isolated JVMs so Via-absent and Via-present
++ * classpaths are real — not simulated by nulling a stub field in-process.
++ */
++class LSSServerNetworkingHandshakeGlueTest {
++
++    private static final String ABSENT_MAIN = "dev.vox.lss.verifier.fabric.ViaAbsentFabricMain";
++    private static final String PRESENT_MAIN = "dev.vox.lss.verifier.fabric.ViaPresentFabricMain";
++
++    private static String testClasspath() {
++        return System.getProperty("java.class.path");
++    }
++
++    @Test
++    void viaClassesAbsentLegacyHandshakeProceedsThroughProductionEntry() {
++        ViaClasspathIsolation.runAbsentMain(ABSENT_MAIN, "legacy_handshake", testClasspath());
++    }
++
++    @Test
++    void throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "throwing_get_api", testClasspath());
++    }
++
++    @Test
++    void providerPresentNullApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "provider_present_null_api", testClasspath());
++    }
++
++    @Test
++    void viaMismatchDeniesEveryLegacyDialectSilentlyThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "via_mismatch_legacy", testClasspath());
++    }
++
++    @Test
++    void viaMismatchNeverTouchesACurrentClientThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "via_mismatch_current", testClasspath());
++    }
++
++    @Test
++    void versionMismatchOutranksViaGuardThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "version_mismatch_outranks", testClasspath());
++    }
++
++    @Test
++    void toggleOffIgnoresViaMismatchThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "toggle_off", testClasspath());
++    }
++
++    @Test
++    void viaMismatchLogsBothMinecraftProtocolNumbers() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "via_mismatch_logs", testClasspath());
++    }
++}
+diff --git a/fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java b/fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
+new file mode 100644
+index 0000000..8695192
+--- /dev/null
++++ b/fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
+@@ -0,0 +1,206 @@
++package dev.vox.lss.verifier;
++
++import java.io.BufferedReader;
++import java.io.File;
++import java.io.IOException;
++import java.io.InputStreamReader;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++import java.util.jar.Attributes;
++import java.util.jar.JarEntry;
++import java.util.jar.JarOutputStream;
++import java.util.jar.Manifest;
++import java.util.stream.Collectors;
++
++/**
++ * Spawns isolated JVMs for Via classpath scenarios. Via stubs are compiled into a
++ * temporary fixture JAR on demand — never checked into {@code src/test}.
++ */
++public final class ViaClasspathIsolation {
++
++    public static final String MARKER_PASS = "VIACLASSPATH_PASS";
++
++    private static volatile Path cachedFixtureJar;
++
++    private ViaClasspathIsolation() {}
++
++    public static boolean isViaRelated(String entry) {
++        if (entry == null || entry.isBlank()) {
++            return false;
++        }
++        String lower = entry.toLowerCase(Locale.ROOT).replace('\\', '/');
++        return lower.contains("com/viaversion")
++                || lower.contains("viaversion")
++                || lower.contains("via-version")
++                || lower.contains("viafabric")
++                || lower.contains("via-fixture");
++    }
++
++    public static String absentClasspath(String rawClasspath) {
++        if (rawClasspath == null || rawClasspath.isBlank()) {
++            return "";
++        }
++        return java.util.Arrays.stream(rawClasspath.split(File.pathSeparator))
++                .filter(part -> !part.isBlank() && !isViaRelated(part))
++                .collect(Collectors.joining(File.pathSeparator));
++    }
++
++    public static Path compileViaFixtureJar() throws IOException {
++        Path existing = cachedFixtureJar;
++        if (existing != null && Files.isRegularFile(existing)) {
++            return existing;
++        }
++        synchronized (ViaClasspathIsolation.class) {
++            if (cachedFixtureJar != null && Files.isRegularFile(cachedFixtureJar)) {
++                return cachedFixtureJar;
++            }
++            Path work = Files.createTempDirectory("lss-via-fixture-src-");
++            Path apiDir = work.resolve("com/viaversion/viaversion/api");
++            Files.createDirectories(apiDir);
++            Files.writeString(apiDir.resolve("ViaAPI.java"), VIA_API_SOURCE, StandardCharsets.UTF_8);
++            Files.writeString(apiDir.resolve("Via.java"), VIA_SOURCE, StandardCharsets.UTF_8);
++
++            Path classes = work.resolve("classes");
++            Files.createDirectories(classes);
++            int javac = runCommand(List.of(
++                    "javac",
++                    "-d", classes.toString(),
++                    apiDir.resolve("ViaAPI.java").toString(),
++                    apiDir.resolve("Via.java").toString()));
++            if (javac != 0) {
++                throw new IOException("javac failed compiling Via fixture (" + javac + ")");
++            }
++
++            Path jar = work.resolve("via-fixture.jar");
++            writeJar(jar, classes);
++            cachedFixtureJar = jar;
++            return jar;
++        }
++    }
++
++    public static void runAbsentMain(String mainClass, String scenario, String rawClasspath) {
++        String classpath = absentClasspath(rawClasspath);
++        assertNoViaEntries(classpath);
++        runIsolated(mainClass, scenario, classpath);
++    }
++
++    public static void runPresentMain(String mainClass, String scenario, String rawClasspath) {
++        try {
++            Path fixture = compileViaFixtureJar();
++            String base = absentClasspath(rawClasspath);
++            assertNoViaEntries(base);
++            String classpath = base + File.pathSeparator + fixture.toAbsolutePath();
++            runIsolated(mainClass, scenario, classpath);
++        } catch (IOException e) {
++            throw new AssertionError("failed to build Via fixture JAR", e);
++        }
++    }
++
++    private static void assertNoViaEntries(String classpath) {
++        for (String part : classpath.split(File.pathSeparator)) {
++            if (isViaRelated(part)) {
++                throw new AssertionError("Via-related entry must not be on absent classpath: " + part);
++            }
++        }
++    }
++
++    private static void runIsolated(String mainClass, String scenario, String classpath) {
++        List<String> cmd = new ArrayList<>();
++        cmd.add(javaBinary());
++        cmd.add("-cp");
++        cmd.add(classpath);
++        cmd.add(mainClass);
++        cmd.add(scenario);
++
++        ProcessBuilder pb = new ProcessBuilder(cmd);
++        pb.redirectErrorStream(true);
++        try {
++            Process proc = pb.start();
++            String output;
++            try (var reader = new BufferedReader(
++                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
++                output = reader.lines().collect(Collectors.joining("\n"));
++            }
++            int code = proc.waitFor();
++            if (code != 0 || !output.contains(MARKER_PASS)) {
++                throw new AssertionError(
++                        "isolated JVM failed for " + mainClass + " scenario=" + scenario
++                                + " exit=" + code + "\nclasspath=" + classpath + "\noutput:\n" + output);
++            }
++        } catch (IOException | InterruptedException e) {
++            Thread.currentThread().interrupt();
++            throw new AssertionError("failed to launch isolated JVM for " + mainClass, e);
++        }
++    }
++
++    private static String javaBinary() {
++        String home = System.getProperty("java.home");
++        return home + File.separator + "bin" + File.separator + "java";
++    }
++
++    private static int runCommand(List<String> cmd) throws IOException {
++        Process proc = new ProcessBuilder(cmd).inheritIO().start();
++        try {
++            return proc.waitFor();
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            throw new IOException("command interrupted: " + cmd, e);
++        }
++    }
++
++    private static void writeJar(Path jar, Path classesRoot) throws IOException {
++        Manifest manifest = new Manifest();
++        manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
++        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar), manifest)) {
++            try (var walk = Files.walk(classesRoot)) {
++                for (Path path : walk.filter(Files::isRegularFile).toList()) {
++                    String entryName = classesRoot.relativize(path).toString().replace('\\', '/');
++                    jos.putNextEntry(new JarEntry(entryName));
++                    Files.copy(path, jos);
++                    jos.closeEntry();
++                }
++            }
++        }
++    }
++
++    private static final String VIA_API_SOURCE = """
++            package com.viaversion.viaversion.api;
++
++            import java.util.UUID;
++
++            public interface ViaAPI<T> {
++                int getPlayerVersion(T player);
++
++                @SuppressWarnings("unchecked")
++                default int getPlayerVersion(UUID uuid) {
++                    return getPlayerVersion((T) uuid);
++                }
++            }
++            """;
++
++    private static final String VIA_SOURCE = """
++            package com.viaversion.viaversion.api;
++
++            import java.util.UUID;
++
++            public final class Via {
++                private Via() {}
++
++                public static volatile ViaAPI<UUID> API;
++                public static volatile RuntimeException throwOnGetApi;
++
++                @SuppressWarnings("rawtypes")
++                public static ViaAPI getAPI() {
++                    RuntimeException t = throwOnGetApi;
++                    if (t != null) {
++                        throw t;
++                    }
++                    return API;
++                }
++            }
++            """;
++}
+diff --git a/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaAbsentFabricMain.java b/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaAbsentFabricMain.java
+new file mode 100644
+index 0000000..f2ec8e9
+--- /dev/null
++++ b/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaAbsentFabricMain.java
+@@ -0,0 +1,93 @@
++package dev.vox.lss.verifier.fabric;
++
++import dev.vox.lss.common.LSSConstants;
++import dev.vox.lss.common.compat.V16CompatManager;
++import dev.vox.lss.common.compat.WireDialectTracker;
++import dev.vox.lss.config.LSSServerConfig;
++import dev.vox.lss.networking.payloads.HandshakeC2SPayload;
++import dev.vox.lss.networking.payloads.SessionConfigS2CPayload;
++import dev.vox.lss.networking.server.LSSServerNetworking;
++import dev.vox.lss.networking.server.RequestProcessingService;
++import dev.vox.lss.verifier.ViaClasspathIsolation;
++import net.minecraft.SharedConstants;
++import net.minecraft.network.chat.Component;
++import net.minecraft.server.Bootstrap;
++import net.minecraft.server.level.ServerPlayer;
++
++import java.util.ArrayList;
++import java.util.UUID;
++
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.atLeastOnce;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++/** Isolated JVM entry: Via classes must be completely absent from the classpath. */
++public final class ViaAbsentFabricMain {
++
++    private static final UUID PLAYER = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
++    private static final int VOXEL_CAPS = LSSConstants.CAPABILITY_VOXEL_COLUMNS;
++
++    private ViaAbsentFabricMain() {}
++
++    public static void main(String[] args) throws Exception {
++        if (args.length != 1) {
++            System.err.println("usage: ViaAbsentFabricMain <scenario>");
++            System.exit(2);
++        }
++        assertViaClassesAbsent();
++        switch (args[0]) {
++            case "legacy_handshake" -> legacyHandshakeProceeds();
++            default -> {
++                System.err.println("unknown scenario: " + args[0]);
++                System.exit(2);
++            }
++        }
++        System.out.println(ViaClasspathIsolation.MARKER_PASS);
++    }
++
++    private static void assertViaClassesAbsent() {
++        try {
++            Class.forName("com.viaversion.viaversion.api.Via");
++            System.err.println("com.viaversion.viaversion.api.Via must not be loadable");
++            System.exit(1);
++        } catch (ClassNotFoundException expected) {
++            // expected — true Via absence
++        }
++    }
++
++    private static void legacyHandshakeProceeds() {
++        SharedConstants.tryDetectVersion();
++        Bootstrap.bootStrap();
++
++        boolean priorToggle = LSSServerConfig.CONFIG.enableViaMismatchGuard;
++        LSSServerConfig.CONFIG.enableViaMismatchGuard = true;
++        try {
++            var service = mock(RequestProcessingService.class);
++            when(service.getV16CompatManager()).thenReturn(new V16CompatManager());
++            when(service.getDialectTracker()).thenReturn(new WireDialectTracker());
++
++            var player = mock(ServerPlayer.class);
++            when(player.getUUID()).thenReturn(PLAYER);
++            when(player.getName()).thenReturn(Component.literal("vx9m"));
++
++            var replies = new ArrayList<SessionConfigS2CPayload>();
++            LSSServerNetworking.handleHandshake(
++                    new HandshakeC2SPayload(19, VOXEL_CAPS),
++                    player, service, replies::add);
++
++            if (replies.isEmpty()) {
++                System.err.println("expected session-config reply with Via absent");
++                System.exit(1);
++            }
++            verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
++        } catch (Throwable t) {
++            t.printStackTrace(System.err);
++            System.exit(1);
++        } finally {
++            LSSServerConfig.CONFIG.enableViaMismatchGuard = priorToggle;
++        }
++    }
++}
+diff --git a/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaPresentFabricMain.java b/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaPresentFabricMain.java
+new file mode 100644
+index 0000000..1b48cd2
+--- /dev/null
++++ b/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaPresentFabricMain.java
+@@ -0,0 +1,236 @@
++package dev.vox.lss.verifier.fabric;
 +
 +import com.viaversion.viaversion.api.Via;
 +import dev.vox.lss.common.LSSConstants;
@@ -95,6 +420,9 @@ index 0000000..8fce501
 +import dev.vox.lss.config.LSSServerConfig;
 +import dev.vox.lss.networking.payloads.HandshakeC2SPayload;
 +import dev.vox.lss.networking.payloads.SessionConfigS2CPayload;
++import dev.vox.lss.networking.server.LSSServerNetworking;
++import dev.vox.lss.networking.server.RequestProcessingService;
++import dev.vox.lss.verifier.ViaClasspathIsolation;
 +import net.minecraft.SharedConstants;
 +import net.minecraft.network.chat.Component;
 +import net.minecraft.server.Bootstrap;
@@ -105,18 +433,12 @@ index 0000000..8fce501
 +import org.apache.logging.log4j.core.LoggerContext;
 +import org.apache.logging.log4j.core.appender.AbstractAppender;
 +import org.apache.logging.log4j.core.config.Property;
-+import org.junit.jupiter.api.AfterEach;
-+import org.junit.jupiter.api.BeforeAll;
-+import org.junit.jupiter.api.BeforeEach;
-+import org.junit.jupiter.api.Test;
 +
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.UUID;
 +import java.util.concurrent.CopyOnWriteArrayList;
 +
-+import static org.junit.jupiter.api.Assertions.assertFalse;
-+import static org.junit.jupiter.api.Assertions.assertTrue;
 +import static org.mockito.ArgumentMatchers.any;
 +import static org.mockito.ArgumentMatchers.anyInt;
 +import static org.mockito.Mockito.atLeastOnce;
@@ -125,70 +447,87 @@ index 0000000..8fce501
 +import static org.mockito.Mockito.verify;
 +import static org.mockito.Mockito.when;
 +
-+/**
-+ * Production Fabric wiring: the normal join-time {@link LSSServerNetworking#handleHandshake}
-+ * entry must consult ViaVersion when the toggle is on — not test-only overloads that inject
-+ * protocol integers directly.
-+ */
-+class LSSServerNetworkingHandshakeGlueTest {
++/** Isolated JVM entry: Via fixture JAR is the only Via provider on the classpath. */
++public final class ViaPresentFabricMain {
 +
-+    private static final UUID PLAYER = UUID.randomUUID();
++    private static final UUID PLAYER = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
 +    private static final int V = LSSConstants.PROTOCOL_VERSION;
 +    private static final int VOXEL_CAPS = LSSConstants.CAPABILITY_VOXEL_COLUMNS;
 +    private static final int VIA_PROTOCOL = 763;
 +
-+    private boolean priorToggle;
++    private ViaPresentFabricMain() {}
 +
-+    @BeforeAll
-+    static void setup() {
++    public static void main(String[] args) throws Exception {
++        if (args.length != 1) {
++            System.err.println("usage: ViaPresentFabricMain <scenario>");
++            System.exit(2);
++        }
 +        SharedConstants.tryDetectVersion();
 +        Bootstrap.bootStrap();
++        resetViaStub();
++        boolean priorToggle = LSSServerConfig.CONFIG.enableViaMismatchGuard;
++        LSSServerConfig.CONFIG.enableViaMismatchGuard = true;
++        try {
++            switch (args[0]) {
++                case "throwing_get_api" -> throwingGetApiLeavesLegacyHandshakeUnchanged();
++                case "provider_present_null_api" -> providerPresentNullApiLeavesLegacyHandshakeUnchanged();
++                case "via_mismatch_legacy" -> viaMismatchDeniesEveryLegacyDialectSilently();
++                case "via_mismatch_current" -> viaMismatchNeverTouchesACurrentClient();
++                case "version_mismatch_outranks" -> versionMismatchOutranksViaGuard();
++                case "toggle_off" -> toggleOffIgnoresViaMismatch();
++                case "via_mismatch_logs" -> viaMismatchLogsBothMinecraftProtocolNumbers();
++                default -> {
++                    System.err.println("unknown scenario: " + args[0]);
++                    System.exit(2);
++                }
++            }
++        } catch (Throwable t) {
++            t.printStackTrace(System.err);
++            System.exit(1);
++        } finally {
++            LSSServerConfig.CONFIG.enableViaMismatchGuard = priorToggle;
++        }
++        System.out.println(ViaClasspathIsolation.MARKER_PASS);
 +    }
 +
-+    @BeforeEach
-+    void resetViaStub() {
++    private static void resetViaStub() {
 +        Via.API = null;
 +        Via.throwOnGetApi = null;
-+        priorToggle = LSSServerConfig.CONFIG.enableViaMismatchGuard;
-+        LSSServerConfig.CONFIG.enableViaMismatchGuard = true;
 +    }
 +
-+    @AfterEach
-+    void restoreToggle() {
-+        LSSServerConfig.CONFIG.enableViaMismatchGuard = priorToggle;
-+    }
-+
-+    @Test
-+    void throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++    private static void throwingGetApiLeavesLegacyHandshakeUnchanged() {
 +        Via.throwOnGetApi = new IllegalArgumentException("Via not initialized");
 +        var service = mockRequestService();
-+        assertFalse(repliesAfterLegacyHandshake(19, service).isEmpty(),
-+                "a throwing Via entry must fail open for that handshake");
++        if (repliesAfterLegacyHandshake(19, service).isEmpty()) {
++            System.err.println("throwing Via entry must fail open");
++            System.exit(1);
++        }
 +        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
 +    }
 +
-+    @Test
-+    void noViaSignalLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++    private static void providerPresentNullApiLeavesLegacyHandshakeUnchanged() {
 +        Via.API = null;
 +        var service = mockRequestService();
-+        assertFalse(repliesAfterLegacyHandshake(19, service).isEmpty(),
-+                "no Via signal must fail open and keep the legacy ladder");
++        if (repliesAfterLegacyHandshake(19, service).isEmpty()) {
++            System.err.println("null Via API must fail open");
++            System.exit(1);
++        }
 +        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
 +    }
 +
-+    @Test
-+    void viaMismatchDeniesEveryLegacyDialectSilentlyThroughProductionEntry() {
++    private static void viaMismatchDeniesEveryLegacyDialectSilently() {
 +        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
 +        for (int version : new int[]{19, 18, 16}) {
 +            var service = mockRequestService();
-+            assertTrue(repliesAfterLegacyHandshake(version, service).isEmpty(),
-+                    "legacy protocol " + version + " must send no session-config reply on Via mismatch");
++            if (!repliesAfterLegacyHandshake(version, service).isEmpty()) {
++                System.err.println("legacy protocol " + version + " must be denied on Via mismatch");
++                System.exit(1);
++            }
 +            verify(service, never()).registerPlayer(any(), anyInt());
 +        }
 +    }
 +
-+    @Test
-+    void viaMismatchNeverTouchesACurrentClientThroughProductionEntry() {
++    private static void viaMismatchNeverTouchesACurrentClient() {
 +        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
 +        var service = mockRequestService();
 +        var player = mockPlayer();
@@ -196,39 +535,44 @@ index 0000000..8fce501
 +        LSSServerNetworking.handleHandshake(
 +                new HandshakeC2SPayload(V, VOXEL_CAPS),
 +                player, service, replies::add);
-+        assertFalse(replies.isEmpty(), "current-protocol clients must not be blocked by Via mismatch");
++        if (replies.isEmpty()) {
++            System.err.println("current-protocol clients must not be blocked");
++            System.exit(1);
++        }
 +        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
 +    }
 +
-+    @Test
-+    void versionMismatchOutranksViaGuardThroughProductionEntry() {
++    private static void versionMismatchOutranksViaGuard() {
 +        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
-+        assertTrue(repliesAfterLegacyHandshake(17, mockRequestService()).isEmpty(),
-+                "foreign protocol must stay on the version-mismatch silent deny");
++        if (!repliesAfterLegacyHandshake(17, mockRequestService()).isEmpty()) {
++            System.err.println("foreign protocol must stay on version-mismatch deny");
++            System.exit(1);
++        }
 +        boolean priorV19 = LSSServerConfig.CONFIG.enableV19Compat;
 +        LSSServerConfig.CONFIG.enableV19Compat = false;
 +        try (var capture = new LssLogCapture()) {
 +            repliesAfterLegacyHandshake(19, mockRequestService());
-+            assertTrue(capture.rows().stream().noneMatch(row ->
-+                            row.message().contains(String.valueOf(VIA_PROTOCOL))),
-+                    "v19 with the rung disabled is a version mismatch, not a Via denial");
++            if (capture.rows().stream().anyMatch(row -> row.message().contains(String.valueOf(VIA_PROTOCOL)))) {
++                System.err.println("v19 with compat disabled is version mismatch, not Via denial");
++                System.exit(1);
++            }
 +        } finally {
 +            LSSServerConfig.CONFIG.enableV19Compat = priorV19;
 +        }
 +    }
 +
-+    @Test
-+    void toggleOffIgnoresViaMismatchThroughProductionEntry() {
++    private static void toggleOffIgnoresViaMismatch() {
 +        LSSServerConfig.CONFIG.enableViaMismatchGuard = false;
 +        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
 +        var service = mockRequestService();
-+        assertFalse(repliesAfterLegacyHandshake(19, service).isEmpty(),
-+                "with enableViaMismatchGuard=false, a Via mismatch must not change outcomes");
++        if (repliesAfterLegacyHandshake(19, service).isEmpty()) {
++            System.err.println("toggle off must ignore Via mismatch");
++            System.exit(1);
++        }
 +        verify(service, atLeastOnce()).registerPlayer(any(), anyInt());
 +    }
 +
-+    @Test
-+    void viaMismatchLogsBothMinecraftProtocolNumbers() {
++    private static void viaMismatchLogsBothMinecraftProtocolNumbers() {
 +        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
 +        int nativeProtocol = SharedConstants.getProtocolVersion();
 +        var player = mockPlayer();
@@ -236,15 +580,18 @@ index 0000000..8fce501
 +            LSSServerNetworking.handleHandshake(
 +                    new HandshakeC2SPayload(19, VOXEL_CAPS),
 +                    player, null, ignored -> {});
-+            assertTrue(capture.rows().stream().anyMatch(row ->
-+                            row.message().contains(String.valueOf(VIA_PROTOCOL))
-+                                    && row.message().contains(String.valueOf(nativeProtocol))),
-+                    "operators must see both Via-reported and server Minecraft protocol numbers");
++            boolean ok = capture.rows().stream().anyMatch(row ->
++                    row.message().contains(String.valueOf(VIA_PROTOCOL))
++                            && row.message().contains(String.valueOf(nativeProtocol)));
++            if (!ok) {
++                System.err.println("expected log with both protocol numbers");
++                System.exit(1);
++            }
 +        }
 +    }
 +
-+    private List<SessionConfigS2CPayload> repliesAfterLegacyHandshake(int protocolVersion,
-+                                                                      RequestProcessingService service) {
++    private static List<SessionConfigS2CPayload> repliesAfterLegacyHandshake(
++            int protocolVersion, RequestProcessingService service) {
 +        var player = mockPlayer();
 +        var replies = new ArrayList<SessionConfigS2CPayload>();
 +        LSSServerNetworking.handleHandshake(
@@ -274,7 +621,7 @@ index 0000000..8fce501
 +        private final LoggerContext ctx;
 +
 +        LssLogCapture() {
-+            super("lss-fabric-glue-test-capture", null, null, true, Property.EMPTY_ARRAY);
++            super("lss-fabric-present-main-capture", null, null, true, Property.EMPTY_ARRAY);
 +            start();
 +            ctx = (LoggerContext) LogManager.getContext(false);
 +            ctx.getConfiguration().getRootLogger().addAppender(this, Level.ALL, null);
@@ -298,55 +645,6 @@ index 0000000..8fce501
 +            ctx.updateLoggers();
 +            stop();
 +        }
-+    }
-+}
-diff --git a/paper/src/test/java/com/viaversion/viaversion/api/Via.java b/paper/src/test/java/com/viaversion/viaversion/api/Via.java
-new file mode 100644
-index 0000000..813b396
---- /dev/null
-+++ b/paper/src/test/java/com/viaversion/viaversion/api/Via.java
-@@ -0,0 +1,23 @@
-+package com.viaversion.viaversion.api;
-+
-+import java.util.UUID;
-+
-+/**
-+ * Real-package-name stub of ViaVersion's static entry class — see {@link ViaAPI}.
-+ * Tests drive {@link #API} / {@link #throwOnGetApi}; production tests reset both in
-+ * {@code @BeforeEach}.
-+ */
-+public final class Via {
-+    private Via() {}
-+
-+    public static volatile ViaAPI<UUID> API;
-+    public static volatile RuntimeException throwOnGetApi;
-+
-+    /** Raw return type, like upstream ({@code public static ViaAPI getAPI()}). */
-+    @SuppressWarnings("rawtypes")
-+    public static ViaAPI getAPI() {
-+        var t = throwOnGetApi;
-+        if (t != null) throw t;
-+        return API;
-+    }
-+}
-diff --git a/paper/src/test/java/com/viaversion/viaversion/api/ViaAPI.java b/paper/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
-new file mode 100644
-index 0000000..0edd2b4
---- /dev/null
-+++ b/paper/src/test/java/com/viaversion/viaversion/api/ViaAPI.java
-@@ -0,0 +1,14 @@
-+package com.viaversion.viaversion.api;
-+
-+import java.util.UUID;
-+
-+/** Real-package-name stub of ViaVersion's API surface for unit tests. */
-+public interface ViaAPI<T> {
-+
-+    int getPlayerVersion(T player);
-+
-+    @SuppressWarnings("unchecked")
-+    default int getPlayerVersion(UUID uuid) {
-+        return getPlayerVersion((T) uuid);
 +    }
 +}
 diff --git a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
@@ -376,238 +674,66 @@ index cc83e20..fdee1ae 100644
          var config = config(true);
 diff --git a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java
 new file mode 100644
-index 0000000..157321d
+index 0000000..67e2714
 --- /dev/null
 +++ b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,58 @@
 +package dev.vox.lss.paper;
 +
-+import com.viaversion.viaversion.api.Via;
-+import dev.vox.lss.common.LSSConstants;
-+import dev.vox.lss.common.compat.V16CompatManager;
-+import dev.vox.lss.common.compat.WireDialectTracker;
-+import io.netty.buffer.Unpooled;
-+import net.minecraft.SharedConstants;
-+import net.minecraft.network.FriendlyByteBuf;
-+import net.minecraft.network.chat.Component;
-+import net.minecraft.server.Bootstrap;
-+import net.minecraft.server.level.ServerPlayer;
-+import org.apache.logging.log4j.Level;
-+import org.apache.logging.log4j.LogManager;
-+import org.apache.logging.log4j.core.LogEvent;
-+import org.apache.logging.log4j.core.LoggerContext;
-+import org.apache.logging.log4j.core.appender.AbstractAppender;
-+import org.apache.logging.log4j.core.config.Property;
-+import org.bukkit.entity.Player;
-+import org.junit.jupiter.api.BeforeAll;
-+import org.junit.jupiter.api.BeforeEach;
++import dev.vox.lss.verifier.ViaClasspathIsolation;
 +import org.junit.jupiter.api.Test;
-+import org.mockito.MockedStatic;
-+
-+import java.lang.reflect.Field;
-+import java.lang.reflect.Method;
-+import java.util.List;
-+import java.util.UUID;
-+import java.util.concurrent.CopyOnWriteArrayList;
-+
-+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-+import static org.junit.jupiter.api.Assertions.assertTrue;
-+import static org.mockito.ArgumentMatchers.any;
-+import static org.mockito.ArgumentMatchers.anyBoolean;
-+import static org.mockito.ArgumentMatchers.anyInt;
-+import static org.mockito.Mockito.atLeastOnce;
-+import static org.mockito.Mockito.mock;
-+import static org.mockito.Mockito.mockStatic;
-+import static org.mockito.Mockito.never;
-+import static org.mockito.Mockito.verify;
-+import static org.mockito.Mockito.when;
 +
 +/**
-+ * Production Paper wiring: the private join-time handshake handler must consult ViaVersion
-+ * when the toggle is on — not test-only static overloads that inject protocol integers.
++ * Production Paper wiring exercised in isolated JVMs so Via-absent and Via-present
++ * classpaths are real — no {@code com.viaversion} imports in this test class.
 + */
 +class LSSPaperPluginViaProductionTest {
 +
-+    private static final UUID PLAYER = UUID.randomUUID();
-+    private static final int V = LSSConstants.PROTOCOL_VERSION;
-+    private static final int VOXEL_CAPS = LSSConstants.CAPABILITY_VOXEL_COLUMNS;
-+    private static final int VIA_PROTOCOL = 763;
++    private static final String ABSENT_MAIN = "dev.vox.lss.verifier.paper.ViaAbsentPaperMain";
++    private static final String PRESENT_MAIN = "dev.vox.lss.verifier.paper.ViaPresentPaperMain";
 +
-+    @BeforeAll
-+    static void setup() {
-+        SharedConstants.tryDetectVersion();
-+        Bootstrap.bootStrap();
-+    }
-+
-+    @BeforeEach
-+    void resetViaStub() {
-+        Via.API = null;
-+        Via.throwOnGetApi = null;
++    private static String testClasspath() {
++        return System.getProperty("java.class.path");
 +    }
 +
 +    @Test
-+    void pluginConstructsWithoutViaVersionInstalled() {
-+        assertDoesNotThrow(LSSPaperPlugin::new,
-+                "Paper must start without ViaVersion on the classpath");
++    void viaClassesAbsentPluginStartsNormally() {
++        ViaClasspathIsolation.runAbsentMain(ABSENT_MAIN, "plugin_starts", testClasspath());
 +    }
 +
 +    @Test
-+    void viaMismatchOnALegacyHandshakeIsDeniedSilentlyThroughProductionEntry() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
-+        try (MockedStatic<PaperPayloadHandler> payloads = mockStatic(PaperPayloadHandler.class)) {
-+            for (int version : new int[]{19, 18, 16}) {
-+                var service = mockRequestService();
-+                invokePrivateHandshake(pluginWith(config(true), service),
-+                        mock(Player.class), mockNmsPlayer(), handshakeFrame(version, VOXEL_CAPS));
-+                verify(service, never()).enqueueRegister(any(), anyInt(), any(), any());
-+            }
-+            payloads.verify(
-+                    () -> PaperPayloadHandler.sendSessionConfig(
-+                            any(), anyInt(), anyBoolean(), anyInt(), anyBoolean()),
-+                    never());
-+            payloads.verify(
-+                    () -> PaperPayloadHandler.sendSessionConfigV16(
-+                            any(), anyBoolean(), anyInt(), anyInt(), anyInt(), anyBoolean()),
-+                    never());
-+        }
++    void viaClassesAbsentLegacyHandshakeProceedsThroughProductionEntry() {
++        ViaClasspathIsolation.runAbsentMain(ABSENT_MAIN, "legacy_handshake", testClasspath());
 +    }
 +
 +    @Test
-+    void viaMismatchNeverTouchesACurrentClientThroughProductionEntry() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
-+        var service = mockRequestService();
-+        invokePrivateHandshake(pluginWith(config(true), service),
-+                mock(Player.class), mockNmsPlayer(), handshakeFrame(V, VOXEL_CAPS));
-+        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    void viaMismatchOnALegacyHandshakeIsDeniedSilentlyThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "via_mismatch_legacy", testClasspath());
 +    }
 +
 +    @Test
-+    void throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() throws Exception {
-+        Via.throwOnGetApi = new IllegalArgumentException("Via not initialized");
-+        var service = mockRequestService();
-+        invokePrivateHandshake(pluginWith(config(true), service),
-+                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
-+        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    void viaMismatchNeverTouchesACurrentClientThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "via_mismatch_current", testClasspath());
 +    }
 +
 +    @Test
-+    void noViaSignalLeavesLegacyHandshakeUnchangedThroughProductionEntry() throws Exception {
-+        Via.API = null;
-+        var service = mockRequestService();
-+        invokePrivateHandshake(pluginWith(config(true), service),
-+                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
-+        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    void throwingGetApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "throwing_get_api", testClasspath());
 +    }
 +
 +    @Test
-+    void viaMismatchLogsBothMinecraftProtocolNumbers() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
-+        int nativeProtocol = SharedConstants.getProtocolVersion();
-+        var plugin = pluginWith(config(true), null);
-+        try (var capture = new LssLogCapture()) {
-+            invokePrivateHandshake(plugin, mock(Player.class), mockNmsPlayer(),
-+                    handshakeFrame(19, VOXEL_CAPS));
-+            assertTrue(capture.rows().stream().anyMatch(row ->
-+                            row.message().contains(String.valueOf(VIA_PROTOCOL))
-+                                    && row.message().contains(String.valueOf(nativeProtocol))),
-+                    "operators must see both Via-reported and server Minecraft protocol numbers");
-+        }
++    void providerPresentNullApiLeavesLegacyHandshakeUnchangedThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "provider_present_null_api", testClasspath());
 +    }
 +
 +    @Test
-+    void toggleOffIgnoresViaMismatchThroughProductionEntry() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
-+        var config = config(true);
-+        config.enableViaMismatchGuard = false;
-+        var service = mockRequestService();
-+        invokePrivateHandshake(pluginWith(config, service),
-+                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
-+        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    void viaMismatchLogsBothMinecraftProtocolNumbers() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "via_mismatch_logs", testClasspath());
 +    }
 +
-+    private static PaperConfig config(boolean enabled) {
-+        var config = new PaperConfig();
-+        config.enabled = enabled;
-+        return config;
-+    }
-+
-+    private static LSSPaperPlugin pluginWith(PaperConfig config, PaperRequestProcessingService service)
-+            throws Exception {
-+        var plugin = new LSSPaperPlugin();
-+        setField(plugin, "lssConfig", config);
-+        setField(plugin, "requestService", service);
-+        return plugin;
-+    }
-+
-+    private static PaperRequestProcessingService mockRequestService() {
-+        var service = mock(PaperRequestProcessingService.class);
-+        when(service.getV16CompatManager()).thenReturn(new V16CompatManager());
-+        when(service.getDialectTracker()).thenReturn(new WireDialectTracker());
-+        return service;
-+    }
-+
-+    private static ServerPlayer mockNmsPlayer() {
-+        var nms = mock(ServerPlayer.class);
-+        when(nms.getUUID()).thenReturn(PLAYER);
-+        when(nms.getName()).thenReturn(Component.literal("vx9m"));
-+        return nms;
-+    }
-+
-+    private static void invokePrivateHandshake(LSSPaperPlugin plugin, Player bukkit,
-+                                               ServerPlayer nms, byte[] data) throws Exception {
-+        Method m = LSSPaperPlugin.class.getDeclaredMethod(
-+                "handleHandshake", Player.class, ServerPlayer.class, byte[].class);
-+        m.setAccessible(true);
-+        m.invoke(plugin, bukkit, nms, data);
-+    }
-+
-+    private static void setField(Object target, String name, Object value) throws Exception {
-+        Field f = target.getClass().getDeclaredField(name);
-+        f.setAccessible(true);
-+        f.set(target, value);
-+    }
-+
-+    private static byte[] handshakeFrame(int version, int caps) {
-+        var b = new FriendlyByteBuf(Unpooled.buffer());
-+        b.writeVarInt(version);
-+        b.writeVarInt(caps);
-+        byte[] out = new byte[b.readableBytes()];
-+        b.readBytes(out);
-+        b.release();
-+        return out;
-+    }
-+
-+    private record LogRow(Level level, String message) {}
-+
-+    private static final class LssLogCapture extends AbstractAppender implements AutoCloseable {
-+        private final List<LogRow> rows = new CopyOnWriteArrayList<>();
-+        private final LoggerContext ctx;
-+
-+        LssLogCapture() {
-+            super("lss-paper-via-production-capture", null, null, true, Property.EMPTY_ARRAY);
-+            start();
-+            ctx = (LoggerContext) LogManager.getContext(false);
-+            ctx.getConfiguration().getRootLogger().addAppender(this, Level.ALL, null);
-+            ctx.updateLoggers();
-+        }
-+
-+        @Override
-+        public void append(LogEvent event) {
-+            if ("LSS".equals(event.getLoggerName())) {
-+                rows.add(new LogRow(event.getLevel(), event.getMessage().getFormattedMessage()));
-+            }
-+        }
-+
-+        List<LogRow> rows() {
-+            return rows;
-+        }
-+
-+        @Override
-+        public void close() {
-+            ctx.getConfiguration().getRootLogger().removeAppender(getName());
-+            ctx.updateLoggers();
-+            stop();
-+        }
++    @Test
++    void toggleOffIgnoresViaMismatchThroughProductionEntry() {
++        ViaClasspathIsolation.runPresentMain(PRESENT_MAIN, "toggle_off", testClasspath());
 +    }
 +}
 diff --git a/paper/src/test/java/dev/vox/lss/paper/PaperConfigValidationTest.java b/paper/src/test/java/dev/vox/lss/paper/PaperConfigValidationTest.java
@@ -646,3 +772,636 @@ index e5c7c1b..665a5f8 100644
      @Test
      void pluginYmlShipsOnTheClasspath() {
          assertNotNull(LSSPaperPlugin.class.getResource("/plugin.yml"),
+diff --git a/paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java b/paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
+new file mode 100644
+index 0000000..8695192
+--- /dev/null
++++ b/paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
+@@ -0,0 +1,206 @@
++package dev.vox.lss.verifier;
++
++import java.io.BufferedReader;
++import java.io.File;
++import java.io.IOException;
++import java.io.InputStreamReader;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++import java.util.jar.Attributes;
++import java.util.jar.JarEntry;
++import java.util.jar.JarOutputStream;
++import java.util.jar.Manifest;
++import java.util.stream.Collectors;
++
++/**
++ * Spawns isolated JVMs for Via classpath scenarios. Via stubs are compiled into a
++ * temporary fixture JAR on demand — never checked into {@code src/test}.
++ */
++public final class ViaClasspathIsolation {
++
++    public static final String MARKER_PASS = "VIACLASSPATH_PASS";
++
++    private static volatile Path cachedFixtureJar;
++
++    private ViaClasspathIsolation() {}
++
++    public static boolean isViaRelated(String entry) {
++        if (entry == null || entry.isBlank()) {
++            return false;
++        }
++        String lower = entry.toLowerCase(Locale.ROOT).replace('\\', '/');
++        return lower.contains("com/viaversion")
++                || lower.contains("viaversion")
++                || lower.contains("via-version")
++                || lower.contains("viafabric")
++                || lower.contains("via-fixture");
++    }
++
++    public static String absentClasspath(String rawClasspath) {
++        if (rawClasspath == null || rawClasspath.isBlank()) {
++            return "";
++        }
++        return java.util.Arrays.stream(rawClasspath.split(File.pathSeparator))
++                .filter(part -> !part.isBlank() && !isViaRelated(part))
++                .collect(Collectors.joining(File.pathSeparator));
++    }
++
++    public static Path compileViaFixtureJar() throws IOException {
++        Path existing = cachedFixtureJar;
++        if (existing != null && Files.isRegularFile(existing)) {
++            return existing;
++        }
++        synchronized (ViaClasspathIsolation.class) {
++            if (cachedFixtureJar != null && Files.isRegularFile(cachedFixtureJar)) {
++                return cachedFixtureJar;
++            }
++            Path work = Files.createTempDirectory("lss-via-fixture-src-");
++            Path apiDir = work.resolve("com/viaversion/viaversion/api");
++            Files.createDirectories(apiDir);
++            Files.writeString(apiDir.resolve("ViaAPI.java"), VIA_API_SOURCE, StandardCharsets.UTF_8);
++            Files.writeString(apiDir.resolve("Via.java"), VIA_SOURCE, StandardCharsets.UTF_8);
++
++            Path classes = work.resolve("classes");
++            Files.createDirectories(classes);
++            int javac = runCommand(List.of(
++                    "javac",
++                    "-d", classes.toString(),
++                    apiDir.resolve("ViaAPI.java").toString(),
++                    apiDir.resolve("Via.java").toString()));
++            if (javac != 0) {
++                throw new IOException("javac failed compiling Via fixture (" + javac + ")");
++            }
++
++            Path jar = work.resolve("via-fixture.jar");
++            writeJar(jar, classes);
++            cachedFixtureJar = jar;
++            return jar;
++        }
++    }
++
++    public static void runAbsentMain(String mainClass, String scenario, String rawClasspath) {
++        String classpath = absentClasspath(rawClasspath);
++        assertNoViaEntries(classpath);
++        runIsolated(mainClass, scenario, classpath);
++    }
++
++    public static void runPresentMain(String mainClass, String scenario, String rawClasspath) {
++        try {
++            Path fixture = compileViaFixtureJar();
++            String base = absentClasspath(rawClasspath);
++            assertNoViaEntries(base);
++            String classpath = base + File.pathSeparator + fixture.toAbsolutePath();
++            runIsolated(mainClass, scenario, classpath);
++        } catch (IOException e) {
++            throw new AssertionError("failed to build Via fixture JAR", e);
++        }
++    }
++
++    private static void assertNoViaEntries(String classpath) {
++        for (String part : classpath.split(File.pathSeparator)) {
++            if (isViaRelated(part)) {
++                throw new AssertionError("Via-related entry must not be on absent classpath: " + part);
++            }
++        }
++    }
++
++    private static void runIsolated(String mainClass, String scenario, String classpath) {
++        List<String> cmd = new ArrayList<>();
++        cmd.add(javaBinary());
++        cmd.add("-cp");
++        cmd.add(classpath);
++        cmd.add(mainClass);
++        cmd.add(scenario);
++
++        ProcessBuilder pb = new ProcessBuilder(cmd);
++        pb.redirectErrorStream(true);
++        try {
++            Process proc = pb.start();
++            String output;
++            try (var reader = new BufferedReader(
++                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
++                output = reader.lines().collect(Collectors.joining("\n"));
++            }
++            int code = proc.waitFor();
++            if (code != 0 || !output.contains(MARKER_PASS)) {
++                throw new AssertionError(
++                        "isolated JVM failed for " + mainClass + " scenario=" + scenario
++                                + " exit=" + code + "\nclasspath=" + classpath + "\noutput:\n" + output);
++            }
++        } catch (IOException | InterruptedException e) {
++            Thread.currentThread().interrupt();
++            throw new AssertionError("failed to launch isolated JVM for " + mainClass, e);
++        }
++    }
++
++    private static String javaBinary() {
++        String home = System.getProperty("java.home");
++        return home + File.separator + "bin" + File.separator + "java";
++    }
++
++    private static int runCommand(List<String> cmd) throws IOException {
++        Process proc = new ProcessBuilder(cmd).inheritIO().start();
++        try {
++            return proc.waitFor();
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            throw new IOException("command interrupted: " + cmd, e);
++        }
++    }
++
++    private static void writeJar(Path jar, Path classesRoot) throws IOException {
++        Manifest manifest = new Manifest();
++        manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
++        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar), manifest)) {
++            try (var walk = Files.walk(classesRoot)) {
++                for (Path path : walk.filter(Files::isRegularFile).toList()) {
++                    String entryName = classesRoot.relativize(path).toString().replace('\\', '/');
++                    jos.putNextEntry(new JarEntry(entryName));
++                    Files.copy(path, jos);
++                    jos.closeEntry();
++                }
++            }
++        }
++    }
++
++    private static final String VIA_API_SOURCE = """
++            package com.viaversion.viaversion.api;
++
++            import java.util.UUID;
++
++            public interface ViaAPI<T> {
++                int getPlayerVersion(T player);
++
++                @SuppressWarnings("unchecked")
++                default int getPlayerVersion(UUID uuid) {
++                    return getPlayerVersion((T) uuid);
++                }
++            }
++            """;
++
++    private static final String VIA_SOURCE = """
++            package com.viaversion.viaversion.api;
++
++            import java.util.UUID;
++
++            public final class Via {
++                private Via() {}
++
++                public static volatile ViaAPI<UUID> API;
++                public static volatile RuntimeException throwOnGetApi;
++
++                @SuppressWarnings("rawtypes")
++                public static ViaAPI getAPI() {
++                    RuntimeException t = throwOnGetApi;
++                    if (t != null) {
++                        throw t;
++                    }
++                    return API;
++                }
++            }
++            """;
++}
+diff --git a/paper/src/test/java/dev/vox/lss/verifier/paper/PaperProductionHarness.java b/paper/src/test/java/dev/vox/lss/verifier/paper/PaperProductionHarness.java
+new file mode 100644
+index 0000000..3042bb7
+--- /dev/null
++++ b/paper/src/test/java/dev/vox/lss/verifier/paper/PaperProductionHarness.java
+@@ -0,0 +1,69 @@
++package dev.vox.lss.verifier.paper;
++
++import dev.vox.lss.paper.LSSPaperPlugin;
++import dev.vox.lss.paper.PaperConfig;
++import dev.vox.lss.paper.PaperRequestProcessingService;
++import org.bukkit.entity.Player;
++
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.lang.reflect.Modifier;
++
++import net.minecraft.server.level.ServerPlayer;
++
++/**
++ * Type-based reflection into {@link LSSPaperPlugin} — no dependency on private
++ * field or method names from the base repository.
++ */
++public final class PaperProductionHarness {
++
++    private PaperProductionHarness() {}
++
++    public static LSSPaperPlugin newPlugin(PaperConfig config, PaperRequestProcessingService service)
++            throws Exception {
++        var plugin = new LSSPaperPlugin();
++        injectConfig(plugin, config);
++        injectRequestService(plugin, service);
++        return plugin;
++    }
++
++    public static void injectConfig(LSSPaperPlugin plugin, PaperConfig config) throws Exception {
++        for (Field field : LSSPaperPlugin.class.getDeclaredFields()) {
++            if (field.getType() == PaperConfig.class && !Modifier.isStatic(field.getModifiers())) {
++                field.setAccessible(true);
++                field.set(plugin, config);
++                return;
++            }
++        }
++        throw new IllegalStateException("no PaperConfig field on LSSPaperPlugin");
++    }
++
++    public static void injectRequestService(LSSPaperPlugin plugin, PaperRequestProcessingService service)
++            throws Exception {
++        for (Field field : LSSPaperPlugin.class.getDeclaredFields()) {
++            if (field.getType() == PaperRequestProcessingService.class
++                    && !Modifier.isStatic(field.getModifiers())) {
++                field.setAccessible(true);
++                field.set(plugin, service);
++                return;
++            }
++        }
++        throw new IllegalStateException("no PaperRequestProcessingService field on LSSPaperPlugin");
++    }
++
++    public static void invokeProductionHandshake(LSSPaperPlugin plugin, Player bukkit,
++                                                  ServerPlayer nms, byte[] data) throws Exception {
++        for (Method method : LSSPaperPlugin.class.getDeclaredMethods()) {
++            if (method.getParameterCount() != 3) {
++                continue;
++            }
++            Class<?>[] params = method.getParameterTypes();
++            if (params[0] == Player.class && params[1] == ServerPlayer.class && params[2] == byte[].class) {
++                method.setAccessible(true);
++                method.invoke(plugin, bukkit, nms, data);
++                return;
++            }
++        }
++        throw new IllegalStateException("no production handshake method on LSSPaperPlugin");
++    }
++}
+diff --git a/paper/src/test/java/dev/vox/lss/verifier/paper/ViaAbsentPaperMain.java b/paper/src/test/java/dev/vox/lss/verifier/paper/ViaAbsentPaperMain.java
+new file mode 100644
+index 0000000..9b24759
+--- /dev/null
++++ b/paper/src/test/java/dev/vox/lss/verifier/paper/ViaAbsentPaperMain.java
+@@ -0,0 +1,107 @@
++package dev.vox.lss.verifier.paper;
++
++import dev.vox.lss.common.LSSConstants;
++import dev.vox.lss.common.compat.V16CompatManager;
++import dev.vox.lss.common.compat.WireDialectTracker;
++import dev.vox.lss.paper.LSSPaperPlugin;
++import dev.vox.lss.paper.PaperConfig;
++import dev.vox.lss.paper.PaperRequestProcessingService;
++import dev.vox.lss.verifier.ViaClasspathIsolation;
++import io.netty.buffer.Unpooled;
++import net.minecraft.SharedConstants;
++import net.minecraft.network.FriendlyByteBuf;
++import net.minecraft.network.chat.Component;
++import net.minecraft.server.Bootstrap;
++import net.minecraft.server.level.ServerPlayer;
++import org.bukkit.entity.Player;
++
++import java.util.UUID;
++
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.atLeastOnce;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++/** Isolated JVM entry: Via classes must be completely absent from the classpath. */
++public final class ViaAbsentPaperMain {
++
++    private static final UUID PLAYER = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
++    private static final int VOXEL_CAPS = LSSConstants.CAPABILITY_VOXEL_COLUMNS;
++
++    private ViaAbsentPaperMain() {}
++
++    public static void main(String[] args) throws Exception {
++        if (args.length != 1) {
++            System.err.println("usage: ViaAbsentPaperMain <scenario>");
++            System.exit(2);
++        }
++        assertViaClassesAbsent();
++        SharedConstants.tryDetectVersion();
++        Bootstrap.bootStrap();
++        switch (args[0]) {
++            case "plugin_starts" -> pluginStartsNormally();
++            case "legacy_handshake" -> legacyHandshakeProceeds();
++            default -> {
++                System.err.println("unknown scenario: " + args[0]);
++                System.exit(2);
++            }
++        }
++        System.out.println(ViaClasspathIsolation.MARKER_PASS);
++    }
++
++    private static void assertViaClassesAbsent() {
++        try {
++            Class.forName("com.viaversion.viaversion.api.Via");
++            System.err.println("com.viaversion.viaversion.api.Via must not be loadable");
++            System.exit(1);
++        } catch (ClassNotFoundException expected) {
++            // expected — true Via absence
++        }
++    }
++
++    private static void pluginStartsNormally() {
++        try {
++            new LSSPaperPlugin();
++        } catch (Throwable t) {
++            t.printStackTrace(System.err);
++            System.exit(1);
++        }
++    }
++
++    private static void legacyHandshakeProceeds() throws Exception {
++        var config = new PaperConfig();
++        config.enabled = true;
++        config.enableViaMismatchGuard = true;
++        var service = mockRequestService();
++        var plugin = PaperProductionHarness.newPlugin(config, service);
++        PaperProductionHarness.invokeProductionHandshake(
++                plugin, mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    private static PaperRequestProcessingService mockRequestService() {
++        var service = mock(PaperRequestProcessingService.class);
++        when(service.getV16CompatManager()).thenReturn(new V16CompatManager());
++        when(service.getDialectTracker()).thenReturn(new WireDialectTracker());
++        return service;
++    }
++
++    private static ServerPlayer mockNmsPlayer() {
++        var nms = mock(ServerPlayer.class);
++        when(nms.getUUID()).thenReturn(PLAYER);
++        when(nms.getName()).thenReturn(Component.literal("vx9m"));
++        return nms;
++    }
++
++    private static byte[] handshakeFrame(int version, int caps) {
++        var b = new FriendlyByteBuf(Unpooled.buffer());
++        b.writeVarInt(version);
++        b.writeVarInt(caps);
++        byte[] out = new byte[b.readableBytes()];
++        b.readBytes(out);
++        b.release();
++        return out;
++    }
++}
+diff --git a/paper/src/test/java/dev/vox/lss/verifier/paper/ViaPresentPaperMain.java b/paper/src/test/java/dev/vox/lss/verifier/paper/ViaPresentPaperMain.java
+new file mode 100644
+index 0000000..c9bb8b9
+--- /dev/null
++++ b/paper/src/test/java/dev/vox/lss/verifier/paper/ViaPresentPaperMain.java
+@@ -0,0 +1,227 @@
++package dev.vox.lss.verifier.paper;
++
++import com.viaversion.viaversion.api.Via;
++import dev.vox.lss.common.LSSConstants;
++import dev.vox.lss.common.compat.V16CompatManager;
++import dev.vox.lss.common.compat.WireDialectTracker;
++import dev.vox.lss.paper.LSSPaperPlugin;
++import dev.vox.lss.paper.PaperConfig;
++import dev.vox.lss.paper.PaperPayloadHandler;
++import dev.vox.lss.paper.PaperRequestProcessingService;
++import dev.vox.lss.verifier.ViaClasspathIsolation;
++import io.netty.buffer.Unpooled;
++import net.minecraft.SharedConstants;
++import net.minecraft.network.FriendlyByteBuf;
++import net.minecraft.network.chat.Component;
++import net.minecraft.server.Bootstrap;
++import net.minecraft.server.level.ServerPlayer;
++import org.apache.logging.log4j.Level;
++import org.apache.logging.log4j.LogManager;
++import org.apache.logging.log4j.core.LogEvent;
++import org.apache.logging.log4j.core.LoggerContext;
++import org.apache.logging.log4j.core.appender.AbstractAppender;
++import org.apache.logging.log4j.core.config.Property;
++import org.bukkit.entity.Player;
++import org.mockito.MockedStatic;
++
++import java.util.List;
++import java.util.UUID;
++import java.util.concurrent.CopyOnWriteArrayList;
++
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyBoolean;
++import static org.mockito.ArgumentMatchers.anyInt;
++import static org.mockito.Mockito.atLeastOnce;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.mockStatic;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++/** Isolated JVM entry: Via fixture JAR is the only Via provider on the classpath. */
++public final class ViaPresentPaperMain {
++
++    private static final UUID PLAYER = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
++    private static final int V = LSSConstants.PROTOCOL_VERSION;
++    private static final int VOXEL_CAPS = LSSConstants.CAPABILITY_VOXEL_COLUMNS;
++    private static final int VIA_PROTOCOL = 763;
++
++    private ViaPresentPaperMain() {}
++
++    public static void main(String[] args) throws Exception {
++        if (args.length != 1) {
++            System.err.println("usage: ViaPresentPaperMain <scenario>");
++            System.exit(2);
++        }
++        SharedConstants.tryDetectVersion();
++        Bootstrap.bootStrap();
++        resetViaStub();
++        try {
++            switch (args[0]) {
++                case "via_mismatch_legacy" -> viaMismatchOnALegacyHandshakeIsDeniedSilently();
++                case "via_mismatch_current" -> viaMismatchNeverTouchesACurrentClient();
++                case "throwing_get_api" -> throwingGetApiLeavesLegacyHandshakeUnchanged();
++                case "provider_present_null_api" -> providerPresentNullApiLeavesLegacyHandshakeUnchanged();
++                case "via_mismatch_logs" -> viaMismatchLogsBothMinecraftProtocolNumbers();
++                case "toggle_off" -> toggleOffIgnoresViaMismatch();
++                default -> {
++                    System.err.println("unknown scenario: " + args[0]);
++                    System.exit(2);
++                }
++            }
++        } catch (Throwable t) {
++            t.printStackTrace(System.err);
++            System.exit(1);
++        }
++        System.out.println(ViaClasspathIsolation.MARKER_PASS);
++    }
++
++    private static void resetViaStub() {
++        Via.API = null;
++        Via.throwOnGetApi = null;
++    }
++
++    private static void viaMismatchOnALegacyHandshakeIsDeniedSilently() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        try (MockedStatic<PaperPayloadHandler> payloads = mockStatic(PaperPayloadHandler.class)) {
++            for (int version : new int[]{19, 18, 16}) {
++                var service = mockRequestService();
++                invokeHandshake(pluginWith(config(true), service),
++                        mock(Player.class), mockNmsPlayer(), handshakeFrame(version, VOXEL_CAPS));
++                verify(service, never()).enqueueRegister(any(), anyInt(), any(), any());
++            }
++            payloads.verify(
++                    () -> PaperPayloadHandler.sendSessionConfig(
++                            any(), anyInt(), anyBoolean(), anyInt(), anyBoolean()),
++                    never());
++            payloads.verify(
++                    () -> PaperPayloadHandler.sendSessionConfigV16(
++                            any(), anyBoolean(), anyInt(), anyInt(), anyInt(), anyBoolean()),
++                    never());
++        }
++    }
++
++    private static void viaMismatchNeverTouchesACurrentClient() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        var service = mockRequestService();
++        invokeHandshake(pluginWith(config(true), service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(V, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    private static void throwingGetApiLeavesLegacyHandshakeUnchanged() throws Exception {
++        Via.throwOnGetApi = new IllegalArgumentException("Via not initialized");
++        var service = mockRequestService();
++        invokeHandshake(pluginWith(config(true), service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    private static void providerPresentNullApiLeavesLegacyHandshakeUnchanged() throws Exception {
++        Via.API = null;
++        var service = mockRequestService();
++        invokeHandshake(pluginWith(config(true), service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    private static void viaMismatchLogsBothMinecraftProtocolNumbers() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        int nativeProtocol = SharedConstants.getProtocolVersion();
++        var plugin = pluginWith(config(true), null);
++        try (var capture = new LssLogCapture()) {
++            invokeHandshake(plugin, mock(Player.class), mockNmsPlayer(),
++                    handshakeFrame(19, VOXEL_CAPS));
++            boolean ok = capture.rows().stream().anyMatch(row ->
++                    row.message().contains(String.valueOf(VIA_PROTOCOL))
++                            && row.message().contains(String.valueOf(nativeProtocol)));
++            if (!ok) {
++                System.err.println("expected log with both protocol numbers");
++                System.exit(1);
++            }
++        }
++    }
++
++    private static void toggleOffIgnoresViaMismatch() throws Exception {
++        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        var config = config(true);
++        config.enableViaMismatchGuard = false;
++        var service = mockRequestService();
++        invokeHandshake(pluginWith(config, service),
++                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
++        verify(service, atLeastOnce()).enqueueRegister(any(), anyInt(), any(), any());
++    }
++
++    private static PaperConfig config(boolean enabled) {
++        var config = new PaperConfig();
++        config.enabled = enabled;
++        return config;
++    }
++
++    private static LSSPaperPlugin pluginWith(PaperConfig config, PaperRequestProcessingService service)
++            throws Exception {
++        return PaperProductionHarness.newPlugin(config, service);
++    }
++
++    private static PaperRequestProcessingService mockRequestService() {
++        var service = mock(PaperRequestProcessingService.class);
++        when(service.getV16CompatManager()).thenReturn(new V16CompatManager());
++        when(service.getDialectTracker()).thenReturn(new WireDialectTracker());
++        return service;
++    }
++
++    private static ServerPlayer mockNmsPlayer() {
++        var nms = mock(ServerPlayer.class);
++        when(nms.getUUID()).thenReturn(PLAYER);
++        when(nms.getName()).thenReturn(Component.literal("vx9m"));
++        return nms;
++    }
++
++    private static void invokeHandshake(LSSPaperPlugin plugin, Player bukkit,
++                                        ServerPlayer nms, byte[] data) throws Exception {
++        PaperProductionHarness.invokeProductionHandshake(plugin, bukkit, nms, data);
++    }
++
++    private static byte[] handshakeFrame(int version, int caps) {
++        var b = new FriendlyByteBuf(Unpooled.buffer());
++        b.writeVarInt(version);
++        b.writeVarInt(caps);
++        byte[] out = new byte[b.readableBytes()];
++        b.readBytes(out);
++        b.release();
++        return out;
++    }
++
++    private record LogRow(Level level, String message) {}
++
++    private static final class LssLogCapture extends AbstractAppender implements AutoCloseable {
++        private final List<LogRow> rows = new CopyOnWriteArrayList<>();
++        private final LoggerContext ctx;
++
++        LssLogCapture() {
++            super("lss-paper-present-main-capture", null, null, true, Property.EMPTY_ARRAY);
++            start();
++            ctx = (LoggerContext) LogManager.getContext(false);
++            ctx.getConfiguration().getRootLogger().addAppender(this, Level.ALL, null);
++            ctx.updateLoggers();
++        }
++
++        @Override
++        public void append(LogEvent event) {
++            if ("LSS".equals(event.getLoggerName())) {
++                rows.add(new LogRow(event.getLevel(), event.getMessage().getFormattedMessage()));
++            }
++        }
++
++        List<LogRow> rows() {
++            return rows;
++        }
++
++        @Override
++        public void close() {
++            ctx.getConfiguration().getRootLogger().removeAppender(getName());
++            ctx.updateLoggers();
++            stop();
++        }
++    }
++}
