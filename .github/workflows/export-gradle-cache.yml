@@ -17,7 +17,7 @@ jobs:
           distribution: temurin
           java-version: 25
 
-      - name: Fetch task warm patches
+      - name: Fetch task patches
         run: |
           set -eux
           mkdir -p .github/task-patches
@@ -35,6 +35,9 @@ jobs:
             :common:compileJava \
             :fabric:testClasses \
             :paper:testClasses
+          ./gradlew --no-daemon --max-workers=1 \
+            :fabric:dependencies --configuration testRuntimeClasspath \
+            :paper:dependencies --configuration testRuntimeClasspath
 
       - name: Archive Gradle user home
         run: tar -cf gradle-user-home.tar -C "${HOME}" .gradle
