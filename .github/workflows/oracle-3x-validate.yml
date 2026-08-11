@@ -24,23 +24,25 @@ jobs:
       - name: Fetch task assets
         run: |
           set -eux
-          mkdir -p .github/task-patches /tests /solution /logs/verifier
+          sudo mkdir -p /tests /solution /logs/verifier /app
+          mkdir -p .github/task-patches
           for f in golden.patch tests.patch config.json test.sh solve.sh; do
             curl -fsSL -o ".github/task-patches/$f" \
               "https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/$f"
           done
-          cp .github/task-patches/golden.patch /solution/golden.patch
-          cp .github/task-patches/tests.patch /tests/tests.patch
-          cp .github/task-patches/config.json /tests/config.json
-          cp .github/task-patches/test.sh /tests/test.sh
-          cp .github/task-patches/solve.sh /solution/solve.sh
-          chmod +x /tests/test.sh /solution/solve.sh
+          sudo cp .github/task-patches/golden.patch /solution/golden.patch
+          sudo cp .github/task-patches/tests.patch /tests/tests.patch
+          sudo cp .github/task-patches/config.json /tests/config.json
+          sudo cp .github/task-patches/test.sh /tests/test.sh
+          sudo cp .github/task-patches/solve.sh /solution/solve.sh
+          sudo chmod +x /tests/test.sh /solution/solve.sh
 
       - name: Install pre-warmed Gradle cache
         run: |
           set -eux
           curl -fsSL -o /tmp/gradle-user-home.tar \
             https://github.com/techcodie/lod-server-support/releases/download/task-101-gradle-cache/gradle-user-home.tar
+          echo "66e2fbb42968c606d4c3525b42432b7f90bbb0ee13fc6a966faf0a26a174bb76  /tmp/gradle-user-home.tar" | sha256sum -c -
           tar -xf /tmp/gradle-user-home.tar -C "${HOME}"
 
       - name: Oracle attempt ${{ matrix.attempt }} — solve + verify
