@@ -101,8 +101,17 @@ gradle.projectsLoaded { g ->
                 group = 'verification'
                 description = 'Prints the unit-test runtime classpath for the verifier JUnit launcher.'
                 dependsOn sub.tasks.named('testClasses')
+                dependsOn sub.rootProject.project(':common').tasks.named('classes')
                 doLast {
-                    println sub.sourceSets.test.runtimeClasspath.asPath
+                    def cp = sub.sourceSets.test.runtimeClasspath
+                    def commonOut = sub.rootProject.project(':common').sourceSets.main.output
+                    def merged = new LinkedHashSet<String>()
+                    merged.addAll(cp.files.collect { it.absolutePath })
+                    commonOut.classesDirs.each { merged.add(it.absolutePath) }
+                    if (commonOut.resourcesDir != null) {
+                        merged.add(commonOut.resourcesDir.absolutePath)
+                    }
+                    println merged.join(File.pathSeparator)
                 }
             }
         }
@@ -266,7 +275,7 @@ def _compile_modules(env: dict[str, str]) -> None:
         f"--init-script={INIT_SCRIPT}",
     ]
     _run(
-        base + [":common:compileJava", ":fabric:testClasses"],
+        base + [":common:classes", ":fabric:testClasses"],
         env,
         WORKSPACE,
     )
