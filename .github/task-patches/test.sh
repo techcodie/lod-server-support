@@ -101,17 +101,8 @@ gradle.projectsLoaded { g ->
                 group = 'verification'
                 description = 'Prints the unit-test runtime classpath for the verifier JUnit launcher.'
                 dependsOn sub.tasks.named('testClasses')
-                dependsOn sub.rootProject.project(':common').tasks.named('classes')
                 doLast {
-                    def cp = sub.sourceSets.test.runtimeClasspath
-                    def commonOut = sub.rootProject.project(':common').sourceSets.main.output
-                    def merged = new LinkedHashSet<String>()
-                    merged.addAll(cp.files.collect { it.absolutePath })
-                    commonOut.classesDirs.each { merged.add(it.absolutePath) }
-                    if (commonOut.resourcesDir != null) {
-                        merged.add(commonOut.resourcesDir.absolutePath)
-                    }
-                    println merged.join(File.pathSeparator)
+                    println sub.sourceSets.test.runtimeClasspath.asPath
                 }
             }
         }
@@ -300,7 +291,18 @@ def _classpath(module: str, env: dict[str, str]) -> str:
     if not lines:
         print("ERROR: empty test classpath", file=sys.stderr)
         raise SystemExit(1)
-    return lines[-1]
+    cp = lines[-1]
+    extras: list[str] = []
+    for rel in (
+        "common/build/classes/java/main",
+        "common/build/resources/main",
+    ):
+        path = WORKSPACE / rel
+        if path.is_dir():
+            extras.append(str(path))
+    if extras:
+        cp = cp + os.pathsep + os.pathsep.join(extras)
+    return cp
 
 
 def _parse_launcher_report(report_xml: Path) -> tuple[int, int, int, int, int, int]:
