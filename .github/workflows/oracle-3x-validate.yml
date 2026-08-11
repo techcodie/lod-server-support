@@ -24,7 +24,7 @@ jobs:
       - name: Fetch task assets
         run: |
           set -eux
-          sudo mkdir -p /tests /solution /logs/verifier /app
+          sudo mkdir -p /tests /solution /logs/verifier
           mkdir -p .github/task-patches
           for f in golden.patch tests.patch config.json test.sh solve.sh; do
             curl -fsSL -o ".github/task-patches/$f" \
@@ -48,6 +48,7 @@ jobs:
       - name: Oracle attempt ${{ matrix.attempt }} — solve + verify
         run: |
           set -eux
+          sudo rm -rf /app
           sudo ln -sfn "${PWD}" /app
           bash /solution/solve.sh
           bash /tests/test.sh
