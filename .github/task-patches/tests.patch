@@ -111,7 +111,7 @@ new file mode 100644
 index 0000000..ca29f7d
 --- /dev/null
 +++ b/fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,234 @@
 +package dev.vox.lss.verifier;
 +
 +import java.io.BufferedReader;
@@ -882,7 +882,7 @@ new file mode 100644
 index 0000000..ca29f7d
 --- /dev/null
 +++ b/paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,234 @@
 +package dev.vox.lss.verifier;
 +
 +import java.io.BufferedReader;
