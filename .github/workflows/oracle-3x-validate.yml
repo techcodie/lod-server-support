@@ -2,10 +2,6 @@ name: Oracle 3x Validate
 
 on:
   workflow_dispatch:
-    inputs:
-      task_dir:
-        description: Unused; patches fetched from main
-        required: false
 
 jobs:
   oracle:
@@ -29,17 +25,28 @@ jobs:
         run: |
           set -eux
           mkdir -p .github/task-patches /tests /solution /logs/verifier
-          curl -fsSL -o .github/task-patches/golden.patch             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
-          curl -fsSL -o .github/task-patches/tests.patch             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/tests.patch
-          curl -fsSL -o /tests/config.json             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/config.json
-          curl -fsSL -o /tests/test.sh             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/test.sh
-          curl -fsSL -o /solution/golden.patch             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
-          curl -fsSL -o /solution/solve.sh             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/solve.sh
+          for f in golden.patch tests.patch config.json test.sh solve.sh; do
+            curl -fsSL -o ".github/task-patches/$f" \
+              "https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/$f"
+          done
+          cp .github/task-patches/golden.patch /solution/golden.patch
+          cp .github/task-patches/tests.patch /tests/tests.patch
+          cp .github/task-patches/config.json /tests/config.json
+          cp .github/task-patches/test.sh /tests/test.sh
+          cp .github/task-patches/solve.sh /solution/solve.sh
           chmod +x /tests/test.sh /solution/solve.sh
+
+      - name: Install pre-warmed Gradle cache
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/gradle-user-home.tar \
+            https://github.com/techcodie/lod-server-support/releases/download/task-101-gradle-cache/gradle-user-home.tar
+          tar -xf /tmp/gradle-user-home.tar -C "${HOME}"
 
       - name: Oracle attempt ${{ matrix.attempt }} — solve + verify
         run: |
           set -eux
+          sudo ln -sfn "${PWD}" /app
           bash /solution/solve.sh
           bash /tests/test.sh
           test "$(cat /logs/verifier/reward.txt)" = "1"
