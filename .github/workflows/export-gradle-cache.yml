@@ -32,23 +32,19 @@ jobs:
           git apply .github/task-patches/golden.patch
           git apply .github/task-patches/tests.patch
           cat > /tmp/verifier-warm.init.gradle <<'GRADLE'
-          allprojects {
-            tasks.register('verifierWarmRuntimeClasspath') {
-              doLast {
-                if (project.extensions.findByName('sourceSets') != null) {
-                  project.configurations.named('testRuntimeClasspath').get().resolve().each { f ->
-                    println "WARM ${project.path}: ${f.name}"
+          gradle.projectsLoaded { g ->
+              g.rootProject.subprojects { sub ->
+                  sub.plugins.withId('java') {
+                      sub.tasks.register('verifierWarmRuntimeClasspath') {
+                          dependsOn sub.tasks.named('testClasses')
+                          doLast {
+                              sub.configurations.named('testRuntimeClasspath').get().resolve().each { f ->
+                                  println "WARM ${sub.path}: ${f.name}"
+                              }
+                          }
+                      }
                   }
-                }
               }
-            }
-          }
-          subprojects { sub ->
-            sub.plugins.withId('java') {
-              sub.tasks.named('verifierWarmRuntimeClasspath').configure {
-                dependsOn sub.tasks.named('testClasses')
-              }
-            }
           }
           GRADLE
           ./gradlew --no-daemon --max-workers=1 \
