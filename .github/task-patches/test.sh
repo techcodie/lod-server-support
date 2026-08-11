@@ -296,36 +296,37 @@ def _classpath(module: str, env: dict[str, str]) -> str:
     for rel in (
         "common/build/classes/java/main",
         "common/build/resources/main",
+        f"{module}/build/classes/java/main",
+        f"{module}/build/resources/main",
     ):
         path = WORKSPACE / rel
         if path.is_dir():
             extras.append(str(path))
     if extras:
-        cp = cp + os.pathsep + os.pathsep.join(extras)
+        merged = [cp]
+        merged.extend(extras)
+        cp = os.pathsep.join(merged)
     return cp
 
 
-def _parse_launcher_report(report_xml: Path) -> tuple[int, int, int, int, int, int]:
-    if not report_xml.is_file():
-        return 0, 0, 0, 0, 0, 0
-    root = ET.parse(report_xml).getroot()
-    if root.tag == "testsuite":
-        suites = [root]
-    else:
-        suites = list(root.iter("testsuite"))
-    if len(suites) != 1:
-        return 0, 0, 0, 0, 0, 0
-    suite = suites[0]
-    cases = list(suite.iter("testcase"))
-    if len(cases) != 1:
-        return 0, len(cases), 0, 0, 0, 0
-    tc = cases[0]
-    skipped = 1 if tc.find("skipped") is not None else 0
-    failure = 1 if tc.find("failure") is not None else 0
-    error = 1 if tc.find("error") is not None else 0
-    failed = max(failure, error)
-    passed = 1 if not skipped and not failed else 0
-    return 1, 1, 1, passed, failed, skipped
+def _parse_testcase_report(
+    report_dir: Path, fqcn: str, method: str
+) -> tuple[int, int, int, int, int, int]:
+    for xml in sorted(report_dir.rglob("*.xml")):
+        try:
+            root = ET.parse(xml).getroot()
+        except ET.ParseError:
+            continue
+        for tc in root.iter("testcase"):
+            if tc.get("classname") != fqcn or tc.get("name") != method:
+                continue
+            skipped = 1 if tc.find("skipped") is not None else 0
+            failure = 1 if tc.find("failure") is not None else 0
+            error = 1 if tc.find("error") is not None else 0
+            failed = max(failure, error)
+            passed = 1 if not skipped and not failed else 0
+            return 1, 1, 1, passed, failed, skipped
+    return 0, 0, 0, 0, 0, 0
 
 
 def _find_console_standalone(env: dict[str, str]) -> Path | None:
@@ -366,12 +367,9 @@ def _run_single_test(
     launcher_cp = classpath
     if standalone is not None:
         launcher_cp = f"{standalone}{os.pathsep}{classpath}"
-    launcher_cp_file = report_dir / "launcher-cp.txt"
-    launcher_cp_file.write_text(launcher_cp, encoding="utf-8")
+    run_env["CLASSPATH"] = launcher_cp
     cmd = [
         "java",
-        "-cp",
-        f"@{launcher_cp_file}",
         "org.junit.platform.console.ConsoleLauncher",
         f"--select-method={fqcn}#{method}",
         f"--reports-dir={report_dir}",
@@ -382,11 +380,18 @@ def _run_single_test(
     if proc.returncode != 0 and (proc.stderr or proc.stdout):
         sys.stderr.write(proc.stdout)
         sys.stderr.write(proc.stderr)
-    xml_files = sorted(report_dir.glob("**/TEST-*.xml"))
-    if len(xml_files) != 1:
-        return TestExecution(fqcn, method, module, 0, 0, 0, 0, 1, 0, 0)
-    discovered, started, finished, passed, failed, skipped = _parse_launcher_report(xml_files[0])
-    if proc.returncode != 0 and failed == 0 and passed == 0:
+    discovered, started, finished, passed, failed, skipped = _parse_testcase_report(
+        report_dir, fqcn, method
+    )
+    if discovered == 0:
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        if f"{method}()" in combined or method in combined:
+            discovered = started = finished = 1
+            if proc.returncode == 0 and "✘" not in combined and "FAILED" not in combined:
+                passed = 1
+            else:
+                failed = 1
+    if proc.returncode != 0 and failed == 0 and passed == 0 and discovered:
         failed = 1
     aborted = 1 if proc.returncode != 0 and passed == 0 and failed == 0 else 0
     return TestExecution(
