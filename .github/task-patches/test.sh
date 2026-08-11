@@ -215,14 +215,18 @@ def _gradle_env(report_dir: Path) -> dict[str, str]:
     # Prefer a verifier-owned Gradle home outside the agent workspace. Docker images
     # warm /root/.gradle at build time; do not use a fresh empty directory with
     # --offline or every verify run would need network access.
-    if env.get("VERIFIER_GRADLE_USER_HOME"):
-        env["GRADLE_USER_HOME"] = env["VERIFIER_GRADLE_USER_HOME"]
-    elif Path("/root/.gradle").is_dir():
-        env["GRADLE_USER_HOME"] = "/root/.gradle"
+    gradle_home: str | None = env.get("VERIFIER_GRADLE_USER_HOME")
+    if not gradle_home:
+        for candidate in ("/root/.gradle", os.path.expanduser("~/.gradle")):
+            if candidate and Path(candidate).is_dir():
+                gradle_home = candidate
+                break
+    if gradle_home:
+        env["GRADLE_USER_HOME"] = gradle_home
     else:
-        gradle_home = report_dir / "gradle-home"
-        gradle_home.mkdir(parents=True, exist_ok=True)
-        env["GRADLE_USER_HOME"] = str(gradle_home)
+        fallback = report_dir / "gradle-home"
+        fallback.mkdir(parents=True, exist_ok=True)
+        env["GRADLE_USER_HOME"] = str(fallback)
     env["GRADLE_OPTS"] = "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.workers.max=1"
     return env
 
