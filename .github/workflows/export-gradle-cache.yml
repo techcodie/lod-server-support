@@ -26,18 +26,39 @@ jobs:
           curl -fsSL -o .github/task-patches/tests.patch \
             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/tests.patch
 
-      - name: Warm verifier compile targets
+      - name: Warm verifier compile + runtime classpath jars
         run: |
           set -eux
           git apply .github/task-patches/golden.patch
           git apply .github/task-patches/tests.patch
+          cat > /tmp/verifier-warm.init.gradle <<'GRADLE'
+          allprojects {
+            tasks.register('verifierWarmRuntimeClasspath') {
+              doLast {
+                if (project.extensions.findByName('sourceSets') != null) {
+                  project.configurations.named('testRuntimeClasspath').get().resolve().each { f ->
+                    println "WARM ${project.path}: ${f.name}"
+                  }
+                }
+              }
+            }
+          }
+          subprojects { sub ->
+            sub.plugins.withId('java') {
+              sub.tasks.named('verifierWarmRuntimeClasspath').configure {
+                dependsOn sub.tasks.named('testClasses')
+              }
+            }
+          }
+          GRADLE
           ./gradlew --no-daemon --max-workers=1 \
             :common:compileJava \
             :fabric:testClasses \
             :paper:testClasses
           ./gradlew --no-daemon --max-workers=1 \
-            :fabric:dependencies --configuration testRuntimeClasspath \
-            :paper:dependencies --configuration testRuntimeClasspath
+            --init-script /tmp/verifier-warm.init.gradle \
+            :fabric:verifierWarmRuntimeClasspath \
+            :paper:verifierWarmRuntimeClasspath
 
       - name: Archive Gradle user home
         run: tar -cf gradle-user-home.tar -C "${HOME}" .gradle
