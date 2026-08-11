@@ -1,5 +1,5 @@
 diff --git a/fabric/build.gradle b/fabric/build.gradle
-index 0559c6b..8290b59 100644
+index 0559c6b..a4f6f14 100644
 --- a/fabric/build.gradle
 +++ b/fabric/build.gradle
 @@ -43,6 +43,8 @@ dependencies {
@@ -11,6 +11,14 @@ index 0559c6b..8290b59 100644
      // LOD-store Phase 0 experiment deps (docs/planning/lod-store-implementation-plan.md):
      // the codec/schema decision tool (LodStoreExperimentTool, gated on
      // -Plss.store.experiment.regionDir) measures decompress throughput + SQLite page-shape
+@@ -84,6 +86,7 @@ dependencies {
+ 
+ test {
+     useJUnitPlatform()
++    environment "VERIFIER_TEST_CLASSPATH", sourceSets.test.runtimeClasspath.asPath
+     // GameTestEntrypointContractTest reads these at runtime (repo-walk); without declaring
+     // them as inputs, adding a gametest class or editing the entrypoint list leaves the
+     // task UP-TO-DATE locally and the contract never re-checks.
 diff --git a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java b/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
 index 1d1f700..f84d122 100644
 --- a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
@@ -32,7 +40,7 @@ index 1d1f700..f84d122 100644
          var c = serverConfig();
 diff --git a/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java b/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java
 new file mode 100644
-index 0000000..6c44ae6
+index 0000000..c696b7a
 --- /dev/null
 +++ b/fabric/src/test/java/dev/vox/lss/networking/server/LSSServerNetworkingHandshakeGlueTest.java
 @@ -0,0 +1,58 @@
@@ -51,7 +59,7 @@ index 0000000..6c44ae6
 +    private static final String PRESENT_MAIN = "dev.vox.lss.verifier.fabric.ViaPresentFabricMain";
 +
 +    private static String testClasspath() {
-+        return System.getProperty("java.class.path");
++        return ViaClasspathIsolation.runtimeClasspath();
 +    }
 +
 +    @Test
@@ -96,10 +104,10 @@ index 0000000..6c44ae6
 +}
 diff --git a/fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java b/fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
 new file mode 100644
-index 0000000..8695192
+index 0000000..ca29f7d
 --- /dev/null
 +++ b/fabric/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,215 @@
 +package dev.vox.lss.verifier;
 +
 +import java.io.BufferedReader;
@@ -125,6 +133,15 @@ index 0000000..8695192
 +public final class ViaClasspathIsolation {
 +
 +    public static final String MARKER_PASS = "VIACLASSPATH_PASS";
++
++    /** Full runtime classpath for spawning isolated JVMs (Gradle test workers omit {@code java.class.path}). */
++    public static String runtimeClasspath() {
++        String fromEnv = System.getenv("VERIFIER_TEST_CLASSPATH");
++        if (fromEnv != null && !fromEnv.isBlank()) {
++            return fromEnv;
++        }
++        return System.getProperty("java.class.path", "");
++    }
 +
 +    private static volatile Path cachedFixtureJar;
 +
@@ -712,6 +729,18 @@ index 0000000..3df1602
 +        }
 +    }
 +}
+diff --git a/paper/build.gradle b/paper/build.gradle
+index 88e0a32..c6ba182 100644
+--- a/paper/build.gradle
++++ b/paper/build.gradle
+@@ -47,6 +47,7 @@ def storeNativeStrip = { el ->
+ 
+ test {
+     useJUnitPlatform()
++    environment "VERIFIER_TEST_CLASSPATH", sourceSets.test.runtimeClasspath.asPath
+     // ReleaseWorkflowContractTest reads the workflow YAMLs from the source tree; without
+     // declaring them as inputs, a workflow-only edit leaves :paper:test UP-TO-DATE locally
+     // and the contract never re-checks (same pattern as fabric's gametest-listing inputs).
 diff --git a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
 index cc83e20..fdee1ae 100644
 --- a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginGlueTest.java
@@ -739,7 +768,7 @@ index cc83e20..fdee1ae 100644
          var config = config(true);
 diff --git a/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java
 new file mode 100644
-index 0000000..67e2714
+index 0000000..949f504
 --- /dev/null
 +++ b/paper/src/test/java/dev/vox/lss/paper/LSSPaperPluginViaProductionTest.java
 @@ -0,0 +1,58 @@
@@ -758,7 +787,7 @@ index 0000000..67e2714
 +    private static final String PRESENT_MAIN = "dev.vox.lss.verifier.paper.ViaPresentPaperMain";
 +
 +    private static String testClasspath() {
-+        return System.getProperty("java.class.path");
++        return ViaClasspathIsolation.runtimeClasspath();
 +    }
 +
 +    @Test
@@ -839,10 +868,10 @@ index e5c7c1b..665a5f8 100644
          assertNotNull(LSSPaperPlugin.class.getResource("/plugin.yml"),
 diff --git a/paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java b/paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
 new file mode 100644
-index 0000000..8695192
+index 0000000..ca29f7d
 --- /dev/null
 +++ b/paper/src/test/java/dev/vox/lss/verifier/ViaClasspathIsolation.java
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,215 @@
 +package dev.vox.lss.verifier;
 +
 +import java.io.BufferedReader;
@@ -868,6 +897,15 @@ index 0000000..8695192
 +public final class ViaClasspathIsolation {
 +
 +    public static final String MARKER_PASS = "VIACLASSPATH_PASS";
++
++    /** Full runtime classpath for spawning isolated JVMs (Gradle test workers omit {@code java.class.path}). */
++    public static String runtimeClasspath() {
++        String fromEnv = System.getenv("VERIFIER_TEST_CLASSPATH");
++        if (fromEnv != null && !fromEnv.isBlank()) {
++            return fromEnv;
++        }
++        return System.getProperty("java.class.path", "");
++    }
 +
 +    private static volatile Path cachedFixtureJar;
 +
