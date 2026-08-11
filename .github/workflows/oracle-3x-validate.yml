@@ -2,6 +2,10 @@ name: Oracle 3x Validate
 
 on:
   workflow_dispatch:
+    inputs:
+      task_dir:
+        description: Unused; patches fetched from main
+        required: false
 
 jobs:
   oracle:
@@ -21,28 +25,21 @@ jobs:
           distribution: temurin
           java-version: 25
 
-      - name: Fetch task patches
+      - name: Fetch task assets
         run: |
           set -eux
-          mkdir -p .github/task-patches
-          curl -fsSL -o .github/task-patches/golden.patch \
-            https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
-          curl -fsSL -o .github/task-patches/tests.patch \
-            https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/tests.patch
+          mkdir -p .github/task-patches /tests /solution /logs/verifier
+          curl -fsSL -o .github/task-patches/golden.patch             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
+          curl -fsSL -o .github/task-patches/tests.patch             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/tests.patch
+          curl -fsSL -o /tests/config.json             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/config.json
+          curl -fsSL -o /tests/test.sh             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/test.sh
+          curl -fsSL -o /solution/golden.patch             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
+          curl -fsSL -o /solution/solve.sh             https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/solve.sh
+          chmod +x /tests/test.sh /solution/solve.sh
 
-      - name: Oracle attempt ${{ matrix.attempt }} — apply + compile
+      - name: Oracle attempt ${{ matrix.attempt }} — solve + verify
         run: |
           set -eux
-          git apply .github/task-patches/golden.patch
-          git apply .github/task-patches/tests.patch
-          ./gradlew --no-daemon --max-workers=1 \
-            :common:compileJava \
-            :fabric:testClasses \
-            :paper:testClasses
-
-      - name: Oracle attempt ${{ matrix.attempt }} — p2p smoke
-        run: |
-          set -eux
-          ./gradlew --no-daemon --max-workers=1 \
-            :fabric:test \
-            --tests dev.vox.lss.networking.server.HandshakeGateTest
+          bash /solution/solve.sh
+          bash /tests/test.sh
+          test "$(cat /logs/verifier/reward.txt)" = "1"
