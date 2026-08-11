@@ -1,5 +1,8 @@
 name: Oracle Full Tests
-on: workflow_dispatch:
+
+on:
+  workflow_dispatch:
+
 jobs:
   full:
     runs-on: ubuntu-latest
@@ -8,18 +11,23 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: task-base-101
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 25
+
       - name: Apply oracle + tests
         run: |
           set -eux
           mkdir -p .github/task-patches
-          curl -fsSL -o .github/task-patches/golden.patch https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
-          curl -fsSL -o .github/task-patches/tests.patch https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/tests.patch
+          curl -fsSL -o .github/task-patches/golden.patch \
+            https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/golden.patch
+          curl -fsSL -o .github/task-patches/tests.patch \
+            https://raw.githubusercontent.com/techcodie/lod-server-support/main/.github/task-patches/tests.patch
           git apply .github/task-patches/golden.patch
           git apply .github/task-patches/tests.patch
+
       - name: Run all graded module tests via Gradle
         run: |
           set -eux
