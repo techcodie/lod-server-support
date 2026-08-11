@@ -306,6 +306,72 @@ index 0000000..8695192
 +            }
 +            """;
 +}
+diff --git a/fabric/src/test/java/dev/vox/lss/verifier/ViaFixtureControl.java b/fabric/src/test/java/dev/vox/lss/verifier/ViaFixtureControl.java
+new file mode 100644
+index 0000000..c09bcaa
+--- /dev/null
++++ b/fabric/src/test/java/dev/vox/lss/verifier/ViaFixtureControl.java
+@@ -0,0 +1,60 @@
++package dev.vox.lss.verifier;
++
++import java.lang.reflect.Field;
++import java.lang.reflect.Proxy;
++import java.util.UUID;
++
++/** Reflective control of the runtime Via fixture — no compile-time Via dependency. */
++public final class ViaFixtureControl {
++
++    private static final String VIA_CLASS = "com.viaversion.viaversion.api.Via";
++    private static final String VIA_API_CLASS = "com.viaversion.viaversion.api.ViaAPI";
++
++    private ViaFixtureControl() {}
++
++    public static void reset() {
++        setStatic("API", null);
++        setStatic("throwOnGetApi", null);
++    }
++
++    public static void setThrowOnGetApi(RuntimeException ex) {
++        setStatic("throwOnGetApi", ex);
++    }
++
++    public static void setNullApi() {
++        setStatic("API", null);
++    }
++
++    public static void setPlayerVersionForPlayer(UUID player, int protocol, int defaultForOthers) {
++        try {
++            Class<?> apiInterface = Class.forName(VIA_API_CLASS);
++            Object api = Proxy.newProxyInstance(
++                    apiInterface.getClassLoader(),
++                    new Class<?>[] {apiInterface},
++                    (proxy, method, args) -> {
++                        if ("getPlayerVersion".equals(method.getName()) && args != null && args.length == 1) {
++                            Object arg = args[0];
++                            if (arg instanceof UUID uuid && uuid.equals(player)) {
++                                return protocol;
++                            }
++                            return defaultForOthers;
++                        }
++                        return 0;
++                    });
++            setStatic("API", api);
++        } catch (ReflectiveOperationException e) {
++            throw new AssertionError("Via fixture control failed", e);
++        }
++    }
++
++    private static void setStatic(String field, Object value) {
++        try {
++            Class<?> via = Class.forName(VIA_CLASS);
++            Field f = via.getDeclaredField(field);
++            f.setAccessible(true);
++            f.set(null, value);
++        } catch (ReflectiveOperationException e) {
++            throw new AssertionError("Via fixture control failed setting " + field, e);
++        }
++    }
++}
 diff --git a/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaAbsentFabricMain.java b/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaAbsentFabricMain.java
 new file mode 100644
 index 0000000..f2ec8e9
@@ -407,13 +473,12 @@ index 0000000..f2ec8e9
 +}
 diff --git a/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaPresentFabricMain.java b/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaPresentFabricMain.java
 new file mode 100644
-index 0000000..1b48cd2
+index 0000000..3df1602
 --- /dev/null
 +++ b/fabric/src/test/java/dev/vox/lss/verifier/fabric/ViaPresentFabricMain.java
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,235 @@
 +package dev.vox.lss.verifier.fabric;
 +
-+import com.viaversion.viaversion.api.Via;
 +import dev.vox.lss.common.LSSConstants;
 +import dev.vox.lss.common.compat.V16CompatManager;
 +import dev.vox.lss.common.compat.WireDialectTracker;
@@ -423,6 +488,7 @@ index 0000000..1b48cd2
 +import dev.vox.lss.networking.server.LSSServerNetworking;
 +import dev.vox.lss.networking.server.RequestProcessingService;
 +import dev.vox.lss.verifier.ViaClasspathIsolation;
++import dev.vox.lss.verifier.ViaFixtureControl;
 +import net.minecraft.SharedConstants;
 +import net.minecraft.network.chat.Component;
 +import net.minecraft.server.Bootstrap;
@@ -491,12 +557,11 @@ index 0000000..1b48cd2
 +    }
 +
 +    private static void resetViaStub() {
-+        Via.API = null;
-+        Via.throwOnGetApi = null;
++        ViaFixtureControl.reset();
 +    }
 +
 +    private static void throwingGetApiLeavesLegacyHandshakeUnchanged() {
-+        Via.throwOnGetApi = new IllegalArgumentException("Via not initialized");
++        ViaFixtureControl.setThrowOnGetApi(new IllegalArgumentException("Via not initialized"));
 +        var service = mockRequestService();
 +        if (repliesAfterLegacyHandshake(19, service).isEmpty()) {
 +            System.err.println("throwing Via entry must fail open");
@@ -506,7 +571,7 @@ index 0000000..1b48cd2
 +    }
 +
 +    private static void providerPresentNullApiLeavesLegacyHandshakeUnchanged() {
-+        Via.API = null;
++        ViaFixtureControl.setNullApi();
 +        var service = mockRequestService();
 +        if (repliesAfterLegacyHandshake(19, service).isEmpty()) {
 +            System.err.println("null Via API must fail open");
@@ -516,7 +581,7 @@ index 0000000..1b48cd2
 +    }
 +
 +    private static void viaMismatchDeniesEveryLegacyDialectSilently() {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        for (int version : new int[]{19, 18, 16}) {
 +            var service = mockRequestService();
 +            if (!repliesAfterLegacyHandshake(version, service).isEmpty()) {
@@ -528,7 +593,7 @@ index 0000000..1b48cd2
 +    }
 +
 +    private static void viaMismatchNeverTouchesACurrentClient() {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        var service = mockRequestService();
 +        var player = mockPlayer();
 +        var replies = new ArrayList<SessionConfigS2CPayload>();
@@ -543,7 +608,7 @@ index 0000000..1b48cd2
 +    }
 +
 +    private static void versionMismatchOutranksViaGuard() {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        if (!repliesAfterLegacyHandshake(17, mockRequestService()).isEmpty()) {
 +            System.err.println("foreign protocol must stay on version-mismatch deny");
 +            System.exit(1);
@@ -563,7 +628,7 @@ index 0000000..1b48cd2
 +
 +    private static void toggleOffIgnoresViaMismatch() {
 +        LSSServerConfig.CONFIG.enableViaMismatchGuard = false;
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        var service = mockRequestService();
 +        if (repliesAfterLegacyHandshake(19, service).isEmpty()) {
 +            System.err.println("toggle off must ignore Via mismatch");
@@ -573,7 +638,7 @@ index 0000000..1b48cd2
 +    }
 +
 +    private static void viaMismatchLogsBothMinecraftProtocolNumbers() {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        int nativeProtocol = SharedConstants.getProtocolVersion();
 +        var player = mockPlayer();
 +        try (var capture = new LssLogCapture()) {
@@ -984,6 +1049,72 @@ index 0000000..8695192
 +            }
 +            """;
 +}
+diff --git a/paper/src/test/java/dev/vox/lss/verifier/ViaFixtureControl.java b/paper/src/test/java/dev/vox/lss/verifier/ViaFixtureControl.java
+new file mode 100644
+index 0000000..c09bcaa
+--- /dev/null
++++ b/paper/src/test/java/dev/vox/lss/verifier/ViaFixtureControl.java
+@@ -0,0 +1,60 @@
++package dev.vox.lss.verifier;
++
++import java.lang.reflect.Field;
++import java.lang.reflect.Proxy;
++import java.util.UUID;
++
++/** Reflective control of the runtime Via fixture — no compile-time Via dependency. */
++public final class ViaFixtureControl {
++
++    private static final String VIA_CLASS = "com.viaversion.viaversion.api.Via";
++    private static final String VIA_API_CLASS = "com.viaversion.viaversion.api.ViaAPI";
++
++    private ViaFixtureControl() {}
++
++    public static void reset() {
++        setStatic("API", null);
++        setStatic("throwOnGetApi", null);
++    }
++
++    public static void setThrowOnGetApi(RuntimeException ex) {
++        setStatic("throwOnGetApi", ex);
++    }
++
++    public static void setNullApi() {
++        setStatic("API", null);
++    }
++
++    public static void setPlayerVersionForPlayer(UUID player, int protocol, int defaultForOthers) {
++        try {
++            Class<?> apiInterface = Class.forName(VIA_API_CLASS);
++            Object api = Proxy.newProxyInstance(
++                    apiInterface.getClassLoader(),
++                    new Class<?>[] {apiInterface},
++                    (proxy, method, args) -> {
++                        if ("getPlayerVersion".equals(method.getName()) && args != null && args.length == 1) {
++                            Object arg = args[0];
++                            if (arg instanceof UUID uuid && uuid.equals(player)) {
++                                return protocol;
++                            }
++                            return defaultForOthers;
++                        }
++                        return 0;
++                    });
++            setStatic("API", api);
++        } catch (ReflectiveOperationException e) {
++            throw new AssertionError("Via fixture control failed", e);
++        }
++    }
++
++    private static void setStatic(String field, Object value) {
++        try {
++            Class<?> via = Class.forName(VIA_CLASS);
++            Field f = via.getDeclaredField(field);
++            f.setAccessible(true);
++            f.set(null, value);
++        } catch (ReflectiveOperationException e) {
++            throw new AssertionError("Via fixture control failed setting " + field, e);
++        }
++    }
++}
 diff --git a/paper/src/test/java/dev/vox/lss/verifier/paper/PaperProductionHarness.java b/paper/src/test/java/dev/vox/lss/verifier/paper/PaperProductionHarness.java
 new file mode 100644
 index 0000000..3042bb7
@@ -1174,13 +1305,12 @@ index 0000000..9b24759
 +}
 diff --git a/paper/src/test/java/dev/vox/lss/verifier/paper/ViaPresentPaperMain.java b/paper/src/test/java/dev/vox/lss/verifier/paper/ViaPresentPaperMain.java
 new file mode 100644
-index 0000000..c9bb8b9
+index 0000000..d6ad04b
 --- /dev/null
 +++ b/paper/src/test/java/dev/vox/lss/verifier/paper/ViaPresentPaperMain.java
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,226 @@
 +package dev.vox.lss.verifier.paper;
 +
-+import com.viaversion.viaversion.api.Via;
 +import dev.vox.lss.common.LSSConstants;
 +import dev.vox.lss.common.compat.V16CompatManager;
 +import dev.vox.lss.common.compat.WireDialectTracker;
@@ -1189,6 +1319,7 @@ index 0000000..c9bb8b9
 +import dev.vox.lss.paper.PaperPayloadHandler;
 +import dev.vox.lss.paper.PaperRequestProcessingService;
 +import dev.vox.lss.verifier.ViaClasspathIsolation;
++import dev.vox.lss.verifier.ViaFixtureControl;
 +import io.netty.buffer.Unpooled;
 +import net.minecraft.SharedConstants;
 +import net.minecraft.network.FriendlyByteBuf;
@@ -1257,12 +1388,11 @@ index 0000000..c9bb8b9
 +    }
 +
 +    private static void resetViaStub() {
-+        Via.API = null;
-+        Via.throwOnGetApi = null;
++        ViaFixtureControl.reset();
 +    }
 +
 +    private static void viaMismatchOnALegacyHandshakeIsDeniedSilently() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        try (MockedStatic<PaperPayloadHandler> payloads = mockStatic(PaperPayloadHandler.class)) {
 +            for (int version : new int[]{19, 18, 16}) {
 +                var service = mockRequestService();
@@ -1282,7 +1412,7 @@ index 0000000..c9bb8b9
 +    }
 +
 +    private static void viaMismatchNeverTouchesACurrentClient() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        var service = mockRequestService();
 +        invokeHandshake(pluginWith(config(true), service),
 +                mock(Player.class), mockNmsPlayer(), handshakeFrame(V, VOXEL_CAPS));
@@ -1290,7 +1420,7 @@ index 0000000..c9bb8b9
 +    }
 +
 +    private static void throwingGetApiLeavesLegacyHandshakeUnchanged() throws Exception {
-+        Via.throwOnGetApi = new IllegalArgumentException("Via not initialized");
++        ViaFixtureControl.setThrowOnGetApi(new IllegalArgumentException("Via not initialized"));
 +        var service = mockRequestService();
 +        invokeHandshake(pluginWith(config(true), service),
 +                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
@@ -1298,7 +1428,7 @@ index 0000000..c9bb8b9
 +    }
 +
 +    private static void providerPresentNullApiLeavesLegacyHandshakeUnchanged() throws Exception {
-+        Via.API = null;
++        ViaFixtureControl.setNullApi();
 +        var service = mockRequestService();
 +        invokeHandshake(pluginWith(config(true), service),
 +                mock(Player.class), mockNmsPlayer(), handshakeFrame(19, VOXEL_CAPS));
@@ -1306,7 +1436,7 @@ index 0000000..c9bb8b9
 +    }
 +
 +    private static void viaMismatchLogsBothMinecraftProtocolNumbers() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        int nativeProtocol = SharedConstants.getProtocolVersion();
 +        var plugin = pluginWith(config(true), null);
 +        try (var capture = new LssLogCapture()) {
@@ -1323,7 +1453,7 @@ index 0000000..c9bb8b9
 +    }
 +
 +    private static void toggleOffIgnoresViaMismatch() throws Exception {
-+        Via.API = uuid -> uuid.equals(PLAYER) ? VIA_PROTOCOL : -1;
++        ViaFixtureControl.setPlayerVersionForPlayer(PLAYER, VIA_PROTOCOL, -1);
 +        var config = config(true);
 +        config.enableViaMismatchGuard = false;
 +        var service = mockRequestService();
