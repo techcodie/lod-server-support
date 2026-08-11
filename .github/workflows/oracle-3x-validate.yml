@@ -36,7 +36,7 @@ jobs:
           sudo cp .github/task-patches/config.json /tests/config.json
           sudo cp .github/task-patches/test.sh /tests/test.sh
           sudo cp .github/task-patches/solve.sh /solution/solve.sh
-          sudo chmod +x /tests/test.sh /solution/solve.sh
+          sudo chmod +x /tests/test.sh /solution/solve.sh gradlew
 
       - name: Install pre-warmed Gradle cache
         run: |
@@ -52,5 +52,13 @@ jobs:
           sudo rm -rf /app
           sudo ln -sfn "${PWD}" /app
           bash /solution/solve.sh
-          bash /tests/test.sh
+          bash /tests/test.sh || {
+            echo "=== verifier stderr ==="
+            cat /logs/verifier/test-stderr.txt || true
+            echo "=== verifier stdout ==="
+            cat /logs/verifier/test-stdout.txt || true
+            echo "=== reward ==="
+            cat /logs/verifier/reward.txt || true
+            exit 1
+          }
           test "$(cat /logs/verifier/reward.txt)" = "1"
