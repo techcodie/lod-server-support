@@ -355,10 +355,12 @@ def _run_single_test(
     launcher_cp = classpath
     if standalone is not None:
         launcher_cp = f"{standalone}{os.pathsep}{classpath}"
+    launcher_cp_file = report_dir / "launcher-cp.txt"
+    launcher_cp_file.write_text(launcher_cp, encoding="utf-8")
     cmd = [
         "java",
         "-cp",
-        launcher_cp,
+        f"@{launcher_cp_file}",
         "org.junit.platform.console.ConsoleLauncher",
         f"--select-method={fqcn}#{method}",
         f"--reports-dir={report_dir}",
