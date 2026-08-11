@@ -2,14 +2,27 @@ diff --git a/fabric/build.gradle b/fabric/build.gradle
 index 0559c6b..db847de 100644
 --- a/fabric/build.gradle
 +++ b/fabric/build.gradle
-@@ -43,6 +43,7 @@ dependencies {
+@@ -43,6 +43,8 @@ dependencies {
      implementation "net.fabricmc:fabric-loader:${project.loader_version}"
      implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
      testImplementation "net.fabricmc:fabric-loader-junit:${project.loader_version}"
 +    testImplementation "org.mockito:mockito-core:5.20.0"
++    testRuntimeOnly "org.junit.platform:junit-platform-console-standalone:1.11.4"
      // LOD-store Phase 0 experiment deps (docs/planning/lod-store-implementation-plan.md):
      // the codec/schema decision tool (LodStoreExperimentTool, gated on
      // -Plss.store.experiment.regionDir) measures decompress throughput + SQLite page-shape
+diff --git a/paper/build.gradle b/paper/build.gradle
+index 8e3a1c2..f4b2d9a 100644
+--- a/paper/build.gradle
++++ b/paper/build.gradle
+@@ -27,6 +27,7 @@ dependencies {
+     testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+     testImplementation 'org.mockito:mockito-core:5.20.0'
+     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
++    testRuntimeOnly 'org.junit.platform:junit-platform-console-standalone:1.11.4'
+ }
+ 
+ // Native strip lists — keep in sync with fabric/build.gradle's slimStoreDepJars
 diff --git a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java b/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
 index 1d1f700..f84d122 100644
 --- a/fabric/src/test/java/dev/vox/lss/config/ConfigValidationTest.java
